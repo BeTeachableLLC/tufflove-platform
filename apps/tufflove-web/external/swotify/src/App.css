@@ -1,0 +1,426 @@
+.feedbackCol {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.custom-box {
+  width: auto;
+  height: auto;
+  margin: auto;
+  padding: 20px;
+  background-color: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
+  transition: box-shadow 0.3s ease-in-out;
+  text-align: left;
+  font-family: "Lato", sans-serif;
+}
+
+/* Hover effect */
+.custom-box:hover {
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2), 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+
+.custom-table {
+  width: 600px;
+  margin-top: 30px;
+  font-family: "Lato", sans-serif;
+}
+
+.resultHeader {
+  font-family: "Poppins", sans-serif;
+  font-size: 32px;
+  text-align: center;
+}
+
+.chart {
+  display: flex;
+  flex-direction: column !important;
+  align-items: center !important;
+  align-content: center !important;
+  justify-content: center !important;
+  font-family: "Poppins", sans-serif;
+  width: 700px;
+}
+
+.retake {
+  padding: 15px;
+  border: 0.5px solid black;
+  border-radius: 50px;
+  width: 200px;
+  background: white;
+  color: black;
+  font-weight: bolder;
+  font-size: 15px;
+  cursor: pointer;
+  font-family: "Poppins", sans-serif;
+}
+
+.pdf {
+  padding: 15px;
+  border: 0.5px solid black;
+  border-radius: 50px;
+  width: 200px;
+  background: white;
+  color: black;
+  font-weight: bolder;
+  font-size: 15px;
+  cursor: pointer;
+  font-family: "Poppins", sans-serif;
+  margin-bottom: 20px;
+}
+
+.pdf:hover {
+  background: linear-gradient(to right, #16133d, #6357a5);
+  color: white;
+}
+
+.retake:hover {
+  background: linear-gradient(to right, #16133d, #6357a5);
+  color: white;
+}
+
+.profileHead {
+  margin-left: 230px !important;
+  padding: 10px;
+}
+
+body {
+  padding: 0px;
+  margin: 0px;
+  width: 100vw;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  background-color: white;
+  color: white !important;
+}
+
+body::-webkit-scrollbar {
+  display: none;
+  /* For Chrome, Safari, and Opera */
+}
+
+.App {
+  display: flex;
+  flex-direction: row;
+  margin-top: 100px;
+  /* justify-content: space-between; */
+}
+
+.App .left {
+  width: 900px;
+}
+
+.App .right img {
+  width: 500px !important;
+  height: 500px !important;
+}
+
+.overHeader {
+  margin-top: 50px;
+  font-family: "Poppins", sans-serif;
+  color: #16133d;
+}
+
+.App .left .renderedQuestion {
+  display: flex;
+  flex-direction: column;
+  justify-content: start;
+  align-items: start;
+  margin-top: 50px;
+  font-family: "Poppins", sans-serif;
+}
+
+.App .right img {
+  width: 60vw;
+  height: 100vh;
+  padding: 80px !important;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.sectionHeader {
+  font-family: "Lato", sans-serif;
+  font-weight: 400;
+  color: #12192a;
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: -0.025em;
+}
+
+.stepDiv {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 50px;
+}
+
+.questionTitle {
+  font-family: "Poppins", sans-serif;
+  font-weight: 500;
+  font-size: 32px;
+  line-height: 1;
+  letter-spacing: -0.05em;
+}
+
+.controllBtn {
+  margin-left: 10px;
+  margin-top: 30px;
+  gap: 20px;
+  display: flex;
+  flex-direction: row;
+  justify-content: start;
+  align-items: center;
+}
+
+.controllBtn .prev {
+  padding: 15px;
+  border: 0.5px solid black;
+  border-radius: 50px;
+  width: 200px;
+  background: linear-gradient(to right, #16133d, #6357a5);
+  color: white;
+  font-weight: bolder;
+  font-size: 15px;
+  cursor: pointer;
+  height: 55px;
+  font-family: "Poppins", sans-serif;
+}
+
+.opts:hover {
+  background-color: #12192a !important;
+  color: white;
+}
+
+.controllBtn .prev:hover {
+  background: white;
+  color: black;
+}
+
+.controllBtn .sub {
+  padding: 15px;
+  border: 0.5px solid black;
+  border-radius: 50px;
+  width: 200px;
+  background: white;
+  color: black;
+  font-weight: bolder;
+  font-size: 15px;
+  cursor: pointer;
+  font-family: "Poppins", sans-serif;
+  margin-top: auto;
+}
+
+.controllBtn .sub:hover {
+  background: linear-gradient(to right, #16133d, #6357a5);
+  color: white;
+}
+
+.progress-container {
+  width: 100%;
+  background-color: #f3f3f3;
+  border-radius: 8px;
+  margin: 20px 0;
+  overflow: hidden;
+  height: 20px;
+}
+
+.progress-bar {
+  height: 100%;
+  background-color: #4caf50;
+  width: 0%;
+  /* Start at 0%, will update dynamically */
+  transition: width 0.3s ease-in-out;
+}
+
+.innerResults {
+  display: flex;
+  flex-direction: column;
+}
+
+.feedback {
+  width: 700px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.riz {
+  display: flex;
+  flex-direction: column !important;
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+.dou {
+  width: 400px !important;
+  height: 400px !important;
+}
+
+@media (max-width: 768px) {
+  .details {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .details input {
+    width: 70vw;
+    margin: 10px;
+  }
+
+  .chart {
+    margin-right: 60vw !important;
+  }
+
+  .App {
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: center !important;
+    align-items: center !important;
+    margin-left: 90vw;
+    overflow-x: hidden !important;
+  }
+
+  .options {
+    font-size: 14px !important;
+    max-width: 270px;
+  }
+
+  .intro {
+    max-width: 90vw !important;
+  }
+
+  .progress-container {
+    width: 80vw !important;
+  }
+
+  .custom-table {
+    width: 400px !important;
+  }
+
+  .colorBox {
+    width: 400px !important;
+  }
+
+  .colorBox {
+    max-width: 70vw;
+  }
+
+  .feedbackCol,
+  .fourTable {
+    display: flex;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    margin-left: 82vw;
+  }
+
+  .custInner {
+    max-width: 270px !important;
+  }
+  .feedback h3 {
+    font-size: 18px;
+  }
+
+  .feedbackCol h2 {
+    font-size: 18px;
+  }
+
+  .feedbackColTable {
+    width: 80vw;
+    margin-left: 3vw;
+  }
+
+  .resultHeader {
+    font-size: 20px !important;
+    margin-right: 60vw;
+    max-width: 250px;
+  }
+
+  .riz {
+    display: flex;
+    flex-direction: column !important;
+    justify-content: center !important;
+    align-items: center !important;
+    margin-right: 30vw !important;
+  }
+
+  .feedback {
+    width: 300px;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    margin-left: 13vw !important;
+  }
+
+  .dou {
+    width: 350px !important;
+    height: 350px !important;
+  }
+
+  .innerResults {
+    margin: 0px;
+    padding: 0px;
+  }
+
+  .App {
+    margin-top: 40px !important;
+    flex-direction: column-reverse;
+    justify-content: center;
+    /* Center elements in column */
+  }
+
+  .App .left,
+  .App .right {
+    width: 100%;
+    /* Full width on mobile */
+  }
+
+  .App .right img {
+    padding: 0px !important;
+  }
+
+  .App .right img {
+    width: 100% !important;
+    /* Adjust image to fit screen width */
+    height: auto !important;
+    /* Maintain aspect ratio */
+  }
+
+  .controllBtn {
+    gap: 10px;
+    display: flex;
+    flex-direction: row;
+    font-size: 12px;
+    padding: 10px;
+    width: 250px;
+  }
+
+  .opt {
+    padding: 20px !important;
+  }
+
+  .safari-browser  {
+    /* background-color: red !important; */
+    margin-left: 30vw !important;
+    overflow-x: hidden !important;
+  }
+
+  .safari-browser .options{
+    max-width: 280px !important;
+    /* color: red !important; */
+  }
+
+  .safari-browser .intro{
+    max-width: 280px !important;
+    /* color: red !important; */
+  }
+
+  .safari-browser .topicHeader{
+    max-width: 180px !important;
+    /* color: red !important; */
+  }
+}

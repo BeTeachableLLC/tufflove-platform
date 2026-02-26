@@ -1,0 +1,167 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+@import "tailwindcss";
+
+:root {
+  --bt-primary: #2b4063;
+  --bt-accent-teal: #00807e;
+  --bt-accent-magenta: #c12b7b;
+  --bt-background: #f7f7f7;
+  --bt-text: #212529;
+  --font-inter: "Inter";
+  --glass-blur: 10px;
+  --glass-bg: rgba(255, 255, 255, 0.8);
+  --glass-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  --background: var(--bt-background);
+  --foreground: var(--bt-text);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter), system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Courier New", Courier, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  scroll-behavior: smooth;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+.js-reveal {
+  opacity: 0;
+  transform: translateY(30px);
+  transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.js-reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.reveal-delay-1 {
+  transition-delay: 0.1s;
+}
+
+.reveal-delay-2 {
+  transition-delay: 0.2s;
+}
+
+.reveal-delay-3 {
+  transition-delay: 0.3s;
+}
+
+.moods-glow {
+  position: relative;
+  display: inline-block;
+}
+
+.moods-glow::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 120%;
+  height: 60%;
+  transform: translate(-50%, -50%);
+  background: rgba(219, 39, 119, 0.5);
+  filter: blur(60px);
+  border-radius: 50%;
+  z-index: -1;
+  animation: moods-glow 4s ease-in-out infinite;
+}
+
+@keyframes moods-glow {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: translate(-50%, -50%) scale(1.1);
+  }
+}
+
+.price-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.price-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    600px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    rgba(219, 39, 119, 0.08),
+    transparent 40%
+  );
+  pointer-events: none;
+}
+
+.ticker-bar {
+  width: 100%;
+  background: #000;
+  border-top: 1px solid rgba(230, 25, 25, 0.35);
+  border-bottom: 1px solid rgba(230, 25, 25, 0.35);
+  overflow: hidden;
+  padding: 1.75rem 0;
+  margin: 5rem 0;
+  white-space: nowrap;
+  display: flex;
+  justify-content: center;
+}
+
+.ticker-content {
+  display: inline-flex;
+  animation: ticker-scroll 35s linear infinite;
+}
+
+.ticker-word {
+  font-weight: 800;
+  letter-spacing: 0.35em;
+  font-size: 0.85rem;
+  color: #e61919;
+  text-transform: uppercase;
+  padding: 0 4.5rem;
+  text-shadow: 0 0 15px rgba(230, 25, 25, 0.4);
+}
+
+@keyframes ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .js-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+@layer components {
+  .liquid-glass {
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    background-color: var(--glass-bg);
+    box-shadow: var(--glass-shadow);
+  }
+}

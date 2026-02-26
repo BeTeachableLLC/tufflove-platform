@@ -1,0 +1,42 @@
+@font-face {
+  font-family: "Cahnga";
+  src: url("./fonts/changa/Changa-Regular.ttf") format("ttf");
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Lato";
+  src: url("./fonts/Lato/Lato-Regular.ttf") format("ttf");
+  font-weight: normal;
+  font-style: normal;
+}
+
+body {
+  margin: 0;
+  /* font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif; */
+  /* font-family: "Cahnga", sans-serif; */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: url("./bgcover.jpg");
+  background-repeat: no-repeat;
+  background-size: cover;
+  /* background: linear-gradient(right, #6357a5, #556cb3, #131A2A); */
+  -moz-osx-font-smoothing: grayscale;
+  /* background: linear-gradient(to right, #131A2A, #6357a5); */
+  overflow-x: hidden !important;
+}
+
+@media print {
+  .pdf {
+    display: none !important;
+  }
+}
+
+
+/* code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+} */

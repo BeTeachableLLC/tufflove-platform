@@ -1,0 +1,1186 @@
+const swotData = {
+  swotQuestions: [
+    {
+      "section": "Strengths",
+      "questions": [
+        {
+          "id": 1,
+          "question": "Patents?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Having patents provides strong legal protection, creating barriers for competitors trying to replicate your product. It ensures your innovation is safeguarded, allowing you to capture market value without imitation. This competitive edge strengthens market position and attracts investors, as intellectual property is often a valuable business asset. Moreover, patents can offer leverage for licensing agreements, royalty payments, or strategic partnerships, enabling additional revenue streams."
+            },
+            {
+              "text": "No",
+              "result": "The absence of patents may expose your business to imitation, making it easier for competitors to copy your innovations and erode your market share. This can lead to price wars, reduced profitability, and diminished brand value. To mitigate this risk, consider other protective measures such as trade secrets, rapid innovation cycles, or developing a unique customer experience. If your product is highly innovative, exploring patent registration may still be a worthwhile investment."
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "question": "Strong brand name?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "A strong brand name helps establish customer trust, recognition, and loyalty, making it easier to introduce new products and expand into new markets. Brand equity also provides a competitive advantage, as customers are more likely to choose a familiar name over unknown competitors. Furthermore, it can command premium pricing, improve customer retention, and reduce marketing costs in the long run by leveraging established trust and familiarity."
+            },
+            {
+              "text": "No",
+              "result": "Without a strong brand, your business may struggle to stand out in the market, and customers may view your products as less reliable. Building a recognizable brand requires consistent messaging, positive customer experiences, and targeted marketing. Investing in brand development through advertising, customer engagement, and partnerships will help create awareness and loyalty, ultimately enhancing long-term success."
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "question": "Good reputation among customers?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "A positive reputation among customers fosters trust, leading to higher customer retention, word-of-mouth referrals, and greater brand advocacy. It reduces customer acquisition costs as loyal customers are more likely to repurchase and recommend your business. In times of crisis or market uncertainty, a good reputation can act as a safety net, maintaining sales and customer loyalty. Continuing to exceed customer expectations will further strengthen your brand’s image."
+            },
+            {
+              "text": "No",
+              "result": "A lack of a positive reputation may hinder your ability to attract and retain customers, affecting revenue and growth. It is crucial to address customer concerns, enhance product quality, and improve service to build trust. Leveraging social proof, such as customer testimonials and reviews, can also help repair and develop a better reputation. Focus on consistent delivery of value and transparency to regain customer confidence."
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "question": "Many product lines?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "A diverse product portfolio reduces reliance on a single product for revenue, helping to spread risk. It allows you to meet the needs of different customer segments and adapt to changing market trends. Furthermore, cross-selling opportunities between product lines can increase the average customer spend. However, managing multiple products requires careful planning to avoid resource dilution, so efficient inventory management and product differentiation strategies are essential."
+            },
+            {
+              "text": "No",
+              "result": "A limited product range could restrict your ability to attract a broader audience or respond to shifts in consumer preferences. Expanding your product offerings can open new revenue streams and mitigate market risks associated with overdependence on a few products. Conducting market research will help identify gaps and ensure that any new product development aligns with customer needs and market trends."
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "question": "Broad market coverage?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Broad market coverage enables your business to reach more customers, improving brand visibility and sales. This approach reduces dependency on a single market, making your business more resilient to local economic shifts. Geographic diversification also allows you to identify and capitalize on growth opportunities in emerging markets. However, ensuring consistent brand messaging and product quality across regions is key to maintaining your competitive edge."
+            },
+            {
+              "text": "No",
+              "result": "Limited market coverage can restrict your revenue potential and increase vulnerability to regional disruptions. Expanding into new markets, whether geographically or through new customer segments, can help diversify revenue streams and reduce risks. Developing a targeted market entry strategy—such as leveraging local partnerships or adapting products to new market needs—can ensure a successful expansion."
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "question": "Manufacturing competence?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Strong manufacturing capabilities enhance product quality, reduce waste, and lower production costs, making your business more competitive. Efficient processes enable faster turnaround times, ensuring timely delivery to customers. Additionally, manufacturing expertise allows you to scale operations efficiently in response to increased demand. Continuous investment in technology and lean practices can further improve performance and keep you ahead of competitors."
+            },
+            {
+              "text": "No",
+              "result": "Lack of manufacturing competence can lead to higher costs, production delays, and quality issues, which may affect customer satisfaction. Optimizing manufacturing processes through automation, staff training, or outsourcing can reduce operational inefficiencies. Building strategic relationships with suppliers and adopting lean manufacturing practices will also help improve your cost structure and product quality."
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "question": "Good marketing skills?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Effective marketing strategies create brand awareness, generate leads, and engage customers, ultimately driving sales. Skilled marketing teams can identify and leverage the right channels—such as social media, content marketing, or paid ads—to reach target audiences efficiently. A well-rounded approach, including data analytics and personalized campaigns, enhances customer acquisition and retention while maximizing return on investment."
+            },
+            {
+              "text": "No",
+              "result": "Weak marketing efforts may limit your business’s visibility and hinder growth. Developing marketing competencies is essential for reaching the right customers and driving sales. Investing in market research, branding, and digital marketing tools will help you craft targeted campaigns. Additionally, building an in-house team or collaborating with agencies can bring fresh perspectives to your marketing strategy, ensuring it aligns with business goals."
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "question": "Ability to attract talented managers?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your company excels at attracting talented managers, which strengthens leadership and enhances strategic decision-making. This capability fosters innovation, drives operational excellence, and creates a competitive advantage by aligning top talent with business objectives."
+            },
+            {
+              "text": "No",
+              "result": "Struggling to attract skilled managers can limit your company's ability to grow and manage complex operations. Enhancing employer branding, offering competitive incentives, and investing in leadership development can help attract and retain talented managers."
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "question": "Ability to motivate employees?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your organization has a strong ability to motivate employees, leading to higher productivity, lower turnover, and better team dynamics. A motivated workforce improves customer satisfaction and contributes to achieving long-term business goals."
+            },
+            {
+              "text": "No",
+              "result": "Without effective employee motivation, productivity and morale may suffer, leading to higher turnover rates. Fostering a positive work culture, recognizing achievements, and offering growth opportunities can boost motivation and drive better results."
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "question": "Ability to innovate?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your company’s ability to innovate positions it at the forefront of industry trends, enabling it to develop new products and services that meet evolving customer needs. Innovation also strengthens your brand and provides a competitive edge in the market."
+            },
+            {
+              "text": "No",
+              "result": "Limited innovation capabilities can leave your business vulnerable to disruption and market shifts. Encouraging creativity, investing in R&D, and fostering a culture of experimentation can enhance your ability to innovate and stay competitive."
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "question": "Ability to manufacture quality products?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your company has mastered the ability to manufacture quality products, which enhances brand reputation, customer satisfaction, and loyalty. Consistent product quality minimizes defects and returns, helping your business maintain a competitive position."
+            },
+            {
+              "text": "No",
+              "result": "Challenges in maintaining product quality can harm your brand’s reputation and lead to dissatisfied customers. Investing in quality control processes, employee training, and supplier management can help ensure high standards in manufacturing."
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "question": "Access to sufficient financial resources?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Having access to sufficient financial resources empowers your business to invest in growth opportunities, scale operations, and manage risks effectively. This financial stability ensures your business can weather downturns and fund innovation initiatives."
+            },
+            {
+              "text": "No",
+              "result": "Lack of financial resources can limit your business’s ability to grow and respond to market opportunities. Exploring alternative funding options, such as venture capital or partnerships, can help improve cash flow and ensure sustainable growth."
+            }
+          ]
+        },
+        {
+          "id": 13,
+          "question": "Strong ability to develop effective strategies?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your company excels at developing effective strategies, providing clarity on objectives and how to achieve them. This capability ensures alignment across departments, drives operational efficiency, and positions your business for long-term success."
+            },
+            {
+              "text": "No",
+              "result": "Weak strategic development can lead to misaligned efforts, missed opportunities, and operational inefficiencies. Strengthening your strategic planning process through data analysis, scenario planning, and leadership involvement can enhance your ability to create and execute winning strategies."
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "question": "Cost of differentiation advantage?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your business has developed a cost-based differentiation strategy, allowing it to offer unique products at competitive prices without sacrificing quality. This advantage enables you to attract both value-conscious and quality-seeking customers, improving profitability through economies of scale and optimized production processes."
+            },
+            {
+              "text": "No",
+              "result": "Lacking a cost advantage could limit your ability to compete on price, especially in markets with price-sensitive customers. Investing in lean production methods, strategic sourcing, and process optimization can help you build this edge, enabling you to lower costs while maintaining differentiation."
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "question": "New-venture management expertise?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Having strong expertise in new-venture management allows your business to explore and capitalize on growth opportunities, bringing innovative products or services to market effectively. This skillset reduces the risks associated with launching new projects, ensures resource efficiency, and helps capture early market share in emerging industries."
+            },
+            {
+              "text": "No",
+              "result": "Without expertise in managing new ventures, your business may struggle to launch successful initiatives or adapt to market changes. Building this capability through targeted training, mentorship programs, and partnerships can enhance your ability to innovate and capture growth opportunities."
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "question": "Appropriate management style?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your leadership employs a management style that aligns with the organization’s goals and culture, fostering collaboration, trust, and employee engagement. The right management style ensures effective communication, better decision-making, and high morale among employees, which ultimately enhances productivity and reduces turnover."
+            },
+            {
+              "text": "No",
+              "result": "An unsuitable management style may lead to low employee morale, high turnover, and ineffective decision-making. Evaluating and adopting a more adaptive approach that considers team dynamics and organizational goals can help improve performance and employee satisfaction."
+            }
+          ]
+        },
+        {
+          "id": 17,
+          "question": "Appropriate organizational structure?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your organization has a well-defined structure that supports seamless communication, quick decision-making, and operational efficiency. This structure ensures clarity in roles and responsibilities, minimizes conflicts, and aligns departments toward common goals, fostering an agile and resilient business model."
+            },
+            {
+              "text": "No",
+              "result": "An ineffective organizational structure may result in communication breakdowns, duplication of efforts, and operational bottlenecks. Restructuring your organization with clear hierarchies, efficient workflows, and well-defined roles can improve coordination and overall performance."
+            }
+          ]
+        },
+        {
+          "id": 18,
+          "question": "Appropriate control systems?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your business has robust control systems in place to monitor performance, manage risks, and ensure compliance with internal policies and regulations. These systems enhance accountability, prevent errors, and facilitate continuous improvement by providing real-time data for informed decision-making."
+            },
+            {
+              "text": "No",
+              "result": "Weak or absent control systems can expose your business to risks such as fraud, inefficiencies, and regulatory non-compliance. Implementing reliable control mechanisms will enhance accountability, mitigate risks, and streamline operations, providing a solid foundation for sustainable growth."
+            }
+          ]
+        },
+        {
+          "id": 19,
+          "question": "Ability to manage strategic change?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your business demonstrates strong change management skills, enabling it to pivot swiftly in response to market shifts or disruptions. This capability ensures smooth transitions during restructuring, mergers, or new initiatives, fostering innovation while maintaining stability and focus on long-term objectives."
+            },
+            {
+              "text": "No",
+              "result": "Difficulty in managing strategic change can hinder your ability to stay competitive in a rapidly evolving market. Developing change management capabilities—such as leadership alignment, communication plans, and employee engagement strategies—can help you adapt more effectively and seize new opportunities."
+            }
+          ]
+        },
+        {
+          "id": 20,
+          "question": "Well-developed corporate strategy?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your organization benefits from a well-developed corporate strategy that aligns its vision, mission, and goals. This clarity enables your business to prioritize resources, drive operational efficiency, and make data-driven decisions, fostering long-term growth and competitive advantage."
+            },
+            {
+              "text": "No",
+              "result": "Operating without a clear corporate strategy can result in misaligned efforts, wasted resources, and missed opportunities. Developing a strategic plan that incorporates market analysis, competitor insights, and organizational strengths can provide direction and facilitate better decision-making."
+            }
+          ]
+        },
+        {
+          "id": 21,
+          "question": "Good international operations?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your business excels in international operations, which helps diversify revenue streams, spread risks, and increase global market presence. Strong international capabilities also enhance your ability to tap into new customer segments and benefit from regional growth opportunities."
+            },
+            {
+              "text": "No",
+              "result": "Limited international operations may restrict your growth potential and increase vulnerability to domestic market fluctuations. Expanding your international footprint through market research, partnerships, and operational efficiency can unlock new opportunities and improve resilience."
+            }
+          ]
+        },
+        {
+          "id": 22,
+          "question": "Able to profit during pandemics?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Your business has proven resilient during pandemics, demonstrating the ability to adapt quickly and maintain profitability despite disruptions. This resilience highlights your agility, strong leadership, and ability to meet customer needs even under challenging circumstances, setting your business apart as a trusted and reliable brand."
+            },
+            {
+              "text": "No",
+              "result": "Struggling to maintain profitability during pandemics or crises may expose vulnerabilities in your business model. Building resilience through contingency planning, digital transformation, and diversified revenue streams can strengthen your ability to weather future disruptions and ensure long-term success."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "section": "Weaknesses",
+      "questions": [
+        {
+          "id": 1,
+          "question": "Obsolete, narrow product lines?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Limited product variety can reduce your business's market appeal and hinder revenue growth. Expanding or updating your product lines can attract new customers and meet evolving consumer demands."
+            },
+            {
+              "text": "No",
+              "result": "Your product lines are well-diversified and relevant to market demands, ensuring strong customer appeal and sustained revenue streams."
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "question": "Prone to loss during pandemics?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Lack of crisis resilience can lead to significant financial losses and operational disruptions during pandemics. Developing contingency plans and diversifying income sources can mitigate risks."
+            },
+            {
+              "text": "No",
+              "result": "Your business model is adaptable to challenges like pandemics, ensuring continued operations and financial stability during crises."
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "question": "Rising manufacturing costs?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Increased manufacturing costs can squeeze profit margins and reduce pricing competitiveness. Streamlining processes or sourcing more affordable materials can improve cost efficiency."
+            },
+            {
+              "text": "No",
+              "result": "Your manufacturing costs are well-controlled, contributing to profitability and pricing competitiveness in the market."
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "question": "Decline in R&D innovations?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Limited innovation efforts can hinder growth and make your business less competitive. Strengthening your R&D investments will foster innovation and market leadership."
+            },
+            {
+              "text": "No",
+              "result": "Your R&D initiatives are actively driving innovation, keeping your business ahead of market trends."
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "question": "Poor marketing skills?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Weak marketing strategies can limit brand visibility and hinder customer acquisition efforts. Improving marketing capabilities will enhance your competitive position."
+            },
+            {
+              "text": "No",
+              "result": "Your marketing strategies effectively attract and retain customers, fostering brand growth and market presence."
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "question": "Poor materials management systems?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Inefficient materials management can lead to increased waste and higher operational costs. Implementing better inventory controls will enhance efficiency."
+            },
+            {
+              "text": "No",
+              "result": "Your materials management systems are efficient, minimizing waste and ensuring smooth operations."
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "question": "Poor reputation?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "A negative reputation can damage customer trust and impact sales. Strengthening public relations and addressing customer concerns can rebuild goodwill."
+            },
+            {
+              "text": "No",
+              "result": "Your business enjoys a positive reputation, fostering trust and loyalty among customers and stakeholders."
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "question": "High cost structure?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "High operational costs reduce margins and limit your ability to compete on price. Optimizing processes and exploring cost-saving measures can improve profitability."
+            },
+            {
+              "text": "No",
+              "result": "Your cost structure is optimized for profitability, allowing you to maintain competitive pricing."
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "question": "Loss of customer goodwill?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Losing customer goodwill can increase churn and reduce future sales. Implementing strong customer service strategies can restore trust."
+            },
+            {
+              "text": "No",
+              "result": "Your business maintains strong relationships with customers, ensuring loyalty and repeat business."
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "question": "Inadequate information systems?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Weak IT systems can lead to operational inefficiencies and poor decision-making. Investing in modern technologies will improve business performance."
+            },
+            {
+              "text": "No",
+              "result": "Your information systems are effective, ensuring smooth operations and data-driven decision-making."
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "question": "Inadequate human resources?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Inadequate staffing can impact productivity and performance. Strengthening recruitment and training efforts will ensure your workforce meets business needs."
+            },
+            {
+              "text": "No",
+              "result": "Your workforce is well-equipped and capable of meeting current business demands."
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "question": "Lack of access to distribution channels?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Limited access to distribution channels can restrict market reach. Expanding your distribution network will increase sales opportunities."
+            },
+            {
+              "text": "No",
+              "result": "Your business has effective distribution channels, ensuring broad market reach."
+            }
+          ]
+        },
+        {
+          "id": 13,
+          "question": "Lack of access to natural resources?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Limited resources can impact production and limit growth opportunities. Securing alternative suppliers can mitigate resource constraints."
+            },
+            {
+              "text": "No",
+              "result": "Your business has sufficient access to essential natural resources, supporting smooth operations."
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "question": "Loss of brand name capital?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Losing brand value can affect customer loyalty and engagement. Investing in brand-building efforts will restore brand equity."
+            },
+            {
+              "text": "No",
+              "result": "Your brand remains strong and recognizable, maintaining customer trust."
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "question": "Lack of patent protection?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Lack of patents can expose your products to imitation and reduce competitive advantage. Strengthening IP protection will safeguard your innovations."
+            },
+            {
+              "text": "No",
+              "result": "Your patents provide strong intellectual property protection, preventing imitation."
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "question": "Growth without direction?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Unplanned growth can cause inefficiencies and confusion. Aligning your growth with strategic goals will ensure sustainable expansion."
+            },
+            {
+              "text": "No",
+              "result": "Your growth strategy is well-aligned with your business objectives, ensuring smooth expansion."
+            }
+          ]
+        },
+        {
+          "id": 17,
+          "question": "Poor product innovation?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Weak innovation reduces market relevance and competitiveness. Enhancing product development efforts will drive future growth."
+            },
+            {
+              "text": "No",
+              "result": "Your product innovation is a core strength, keeping you competitive in the market."
+            }
+          ]
+        },
+        {
+          "id": 18,
+          "question": "Inconsistent operations?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Operational inconsistencies can affect performance and quality. Standardizing processes will improve efficiency."
+            },
+            {
+              "text": "No",
+              "result": "Your operations are consistent and reliable, ensuring high-quality output."
+            }
+          ]
+        },
+        {
+          "id": 19,
+          "question": "Inadequate organizational structure?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Poor structure can hinder communication and productivity. Restructuring your organization will enhance efficiency."
+            },
+            {
+              "text": "No",
+              "result": "Your organizational structure supports effective communication and operations."
+            }
+          ]
+        },
+        {
+          "id": 20,
+          "question": "Inappropriate control systems?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Weak controls can increase risks and reduce operational efficiency. Strengthening internal controls will improve risk management."
+            },
+            {
+              "text": "No",
+              "result": "Your control systems are robust, ensuring effective risk management."
+            }
+          ]
+        },
+        {
+          "id": 21,
+          "question": "High conflict and politics?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Internal conflicts and office politics can lead to a toxic work environment, diminishing team morale and productivity. It's essential to foster a culture of collaboration and open communication to address underlying issues and build a more cohesive team."
+            },
+            {
+              "text": "No",
+              "result": "Your organization maintains a positive work environment, characterized by collaboration and mutual respect. This atmosphere promotes high performance and job satisfaction among employees."
+            }
+          ]
+        },
+        {
+          "id": 22,
+          "question": "Is there a lack of leadership or vision?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "A lack of leadership or vision can create uncertainty and hinder progress. Developing a clear vision and strengthening leadership will align teams and drive growth."
+            },
+            {
+              "text": "No",
+              "result": "Your leadership provides clear direction, ensuring that your team is aligned with long-term goals and objectives."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "section": "Opportunities",
+      "questions": [
+        {
+          "id": 1,
+          "question": "Expand core business(es)?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Expanding core operations can boost revenue and market share. It allows your business to capitalize on existing strengths and meet increased demand."
+            },
+            {
+              "text": "No",
+              "result": "Focusing on existing business levels without expansion for now. This can help solidify current operations but may limit growth potential."
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "question": "Exploit new market segments?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Entering new segments can unlock hidden revenue opportunities, helping diversify the customer base and reduce dependency on current markets."
+            },
+            {
+              "text": "No",
+              "result": "Staying focused on current target markets. This approach can strengthen brand loyalty but may overlook potential growth avenues."
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "question": "Arrival of new technologies?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Leveraging new technologies can drive innovation and efficiency, giving your business a competitive edge and improving operations."
+            },
+            {
+              "text": "No",
+              "result": "Current technology solutions are adequate. This conservatism can be beneficial but may risk falling behind industry advancements."
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "question": "Removal of international trade barriers?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Lower trade barriers can open new export opportunities, enhancing global reach and diversifying revenue streams."
+            },
+            {
+              "text": "No",
+              "result": "No significant changes in international trade policies relevant to your business. This stability can allow for consistent planning."
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "question": "Exploit unfulfilled customer needs?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Meeting unmet needs can increase customer satisfaction and loyalty, positioning your business as a leader in customer-centric solutions."
+            },
+            {
+              "text": "No",
+              "result": "Current offerings align well with customer needs. While this indicates stability, it may also suggest a lack of innovation."
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "question": "Widen new market segments?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Expanding into new segments can boost business growth, leveraging existing capabilities to capture new audiences."
+            },
+            {
+              "text": "No",
+              "result": "Current segments provide sufficient opportunities. This conservative approach can reduce risk but may limit growth potential."
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "question": "Extend cost or differentiation advantage?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Strengthening these advantages improves competitiveness, enabling your business to maintain pricing power and attract more customers."
+            },
+            {
+              "text": "No",
+              "result": "Current strategies are effective as they are. This may foster stability, but also risks complacency in a dynamic market."
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "question": "Diversify into new growth businesses?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Diversification can reduce risk and increase revenue streams, helping to buffer against market volatility."
+            },
+            {
+              "text": "No",
+              "result": "Focusing on core business activities for now. This strategy may strengthen your core offerings but could limit growth."
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "question": "Expand into foreign markets?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "International expansion can create new growth avenues, allowing your business to tap into emerging markets and customer bases."
+            },
+            {
+              "text": "No",
+              "result": "Staying focused on domestic markets for the moment can help consolidate resources and strengthen local operations."
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "question": "Apply R&D skills in new areas?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Exploring new areas with R&D can boost innovation, potentially leading to breakthrough products or processes."
+            },
+            {
+              "text": "No",
+              "result": "R&D will remain focused on current projects, ensuring existing developments are executed effectively."
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "question": "Enter new related businesses?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Entering related businesses can increase market synergies, enhancing overall business performance and value."
+            },
+            {
+              "text": "No",
+              "result": "Staying focused on existing business operations. This may optimize current resources but could limit potential synergies."
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "question": "Vertically integrate forward?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Forward integration can enhance control over the distribution process, improving margins and customer relationships."
+            },
+            {
+              "text": "No",
+              "result": "Maintaining the current level of control over distribution. This strategy may reduce risks associated with rapid changes."
+            }
+          ]
+        },
+        {
+          "id": 13,
+          "question": "Vertically integrate backward?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Backward integration can secure key inputs and reduce costs, increasing overall operational efficiency."
+            },
+            {
+              "text": "No",
+              "result": "Relying on existing suppliers for now. This may provide flexibility but could expose the business to supply chain vulnerabilities."
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "question": "Integrate corporate portfolio?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Integration can optimize portfolio performance, allowing for better resource allocation and strategic alignment."
+            },
+            {
+              "text": "No",
+              "result": "Current portfolio management practices are sufficient. This indicates stability but may miss opportunities for synergy."
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "question": "Lower barriers to entry?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Reduced barriers can attract new opportunities, enabling faster market penetration and growth."
+            },
+            {
+              "text": "No",
+              "result": "Barriers remain challenging but manageable. This may encourage steady growth but can limit aggressive expansion."
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "question": "Acquire foreign competitors?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Acquisitions can strengthen market position and reduce competition, enhancing your overall strategic advantage."
+            },
+            {
+              "text": "No",
+              "result": "Acquisitions are not a strategic priority at the moment. This can maintain focus but may risk missing market shifts."
+            }
+          ]
+        },
+        {
+          "id": 17,
+          "question": "Increase product innovations?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "More innovations can enhance competitive advantage, attracting customers and improving market share."
+            },
+            {
+              "text": "No",
+              "result": "Current products are performing well. This suggests stability but may hinder long-term growth."
+            }
+          ]
+        },
+        {
+          "id": 18,
+          "question": "Seek fast market growth?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Pursuing rapid growth can increase market share, positioning your business favorably against competitors."
+            },
+            {
+              "text": "No",
+              "result": "Focusing on sustainable, steady growth instead. This approach can foster long-term stability but may limit short-term gains."
+            }
+          ]
+        },
+        {
+          "id": 19,
+          "question": "Growth during pandemics?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Pandemic conditions can present unique growth opportunities, enabling businesses to innovate and adapt to changing needs."
+            },
+            {
+              "text": "No",
+              "result": "Focus is on stability rather than growth during pandemics. This cautious approach can protect resources but may overlook potential market shifts."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "section": "Threats",
+      "questions": [
+        {
+          "id": 1,
+          "question": "Attacks on core business(es)?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "External threats, such as cyberattacks or market disruptions, could significantly disrupt key operations or revenue streams, leading to potential financial losses and reputational damage."
+            },
+            {
+              "text": "No",
+              "result": "Core businesses are currently secure, indicating effective risk management strategies and robust security measures in place to protect against potential threats."
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "question": "Pandemics cause business interruption?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Pandemics could disrupt supply chains and operations, affecting the availability of raw materials, workforce productivity, and overall market demand, leading to significant operational challenges."
+            },
+            {
+              "text": "No",
+              "result": "Pandemic-related risks are under control, suggesting that contingency plans and adaptive strategies have been successfully implemented to mitigate potential disruptions."
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "question": "Increases in domestic competition?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Increased competition can pressure market share and profitability, necessitating innovative strategies and enhanced customer engagement to maintain a competitive edge."
+            },
+            {
+              "text": "No",
+              "result": "Competition levels remain stable, allowing for consistent market positioning and the potential for strategic growth without the immediate pressure of aggressive competitors."
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "question": "Shift in consumer tastes?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Changes in consumer preferences could impact demand, requiring businesses to adapt their product offerings and marketing strategies to align with evolving customer expectations."
+            },
+            {
+              "text": "No",
+              "result": "Consumer preferences align with current offerings, indicating a strong understanding of market demands and effective brand positioning."
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "question": "Emergence of substitute products?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Substitute products could threaten market position, compelling the company to enhance product features, reduce prices, or improve customer service to retain consumer loyalty."
+            },
+            {
+              "text": "No",
+              "result": "Current products have a strong market presence, reflecting brand strength and customer trust that protect against potential substitution."
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "question": "New regulations?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "New regulations could increase compliance costs, necessitating adjustments to operations, potential fines, and resource allocation to meet new standards."
+            },
+            {
+              "text": "No",
+              "result": "Current regulations are manageable, suggesting a well-prepared compliance framework that minimizes operational disruptions."
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "question": "Increased trade barriers?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Trade barriers could limit foreign market access, restricting growth opportunities and necessitating a reevaluation of market strategies."
+            },
+            {
+              "text": "No",
+              "result": "Trade barriers remain unchanged, facilitating smoother international operations and potentially enhancing global market opportunities."
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "question": "Increases in foreign competition?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Foreign competitors could capture market share, prompting the need for strategic differentiation and stronger marketing efforts to sustain a competitive advantage."
+            },
+            {
+              "text": "No",
+              "result": "Foreign competition is stable, providing a conducive environment for consistent market operations without the threat of aggressive new entrants."
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "question": "Fall in barriers to entry?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Easier market entry could attract new competitors, necessitating proactive strategies to defend market position and customer loyalty."
+            },
+            {
+              "text": "No",
+              "result": "Barriers to entry remain high, protecting established businesses from new competitors and allowing for continued market dominance."
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "question": "Rise in new or substitute products?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "New products could shift customer demand away, requiring continuous innovation and customer engagement to retain market interest."
+            },
+            {
+              "text": "No",
+              "result": "Current offerings maintain strong customer interest, indicating effective brand loyalty and product relevance."
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "question": "Increase in industry rivalry?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Intensified rivalry could reduce profitability, driving the need for enhanced operational efficiencies and strategic differentiation."
+            },
+            {
+              "text": "No",
+              "result": "Industry rivalry remains moderate, allowing for stable profit margins and a focus on growth opportunities."
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "question": "Higher labor costs?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Rising labor costs could impact profitability, compelling companies to explore automation and efficiency improvements to offset expenses."
+            },
+            {
+              "text": "No",
+              "result": "Labor costs remain stable, facilitating predictable budgeting and financial planning."
+            }
+          ]
+        },
+        {
+          "id": 13,
+          "question": "New forms of industry competition?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Emerging competition could disrupt the market, necessitating rapid adaptation to new business models and customer expectations."
+            },
+            {
+              "text": "No",
+              "result": "Current competition landscape remains unchanged, allowing for continued focus on core business strategies."
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "question": "Potential for takeover?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Takeover threats could destabilize the company, prompting a need for strategic defense mechanisms and stakeholder engagement."
+            },
+            {
+              "text": "No",
+              "result": "The company is secure from hostile takeovers, indicating strong governance and shareholder confidence."
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "question": "Susceptible to corporate raiders?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Corporate raiders could pose governance risks, requiring robust governance practices and strategic communication with stakeholders."
+            },
+            {
+              "text": "No",
+              "result": "Corporate raiding risks are minimal, reflecting solid business practices and investor confidence."
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "question": "Changes in demographic factors?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Demographic shifts could affect demand, necessitating market research and product adjustments to meet changing consumer profiles."
+            },
+            {
+              "text": "No",
+              "result": "Demographic trends remain favorable, supporting sustained demand and growth opportunities."
+            }
+          ]
+        },
+        {
+          "id": 17,
+          "question": "Negative economic factors?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Economic downturns could hurt business performance, prompting the need for contingency planning and cost management strategies."
+            },
+            {
+              "text": "No",
+              "result": "Economic conditions are stable, allowing for strategic growth and investment."
+            }
+          ]
+        },
+        {
+          "id": 18,
+          "question": "Increase in political risk?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Political instability could impact operations, necessitating risk assessments and contingency strategies to mitigate disruptions."
+            },
+            {
+              "text": "No",
+              "result": "Political risks are low, providing a stable environment for business operations."
+            }
+          ]
+        },
+        {
+          "id": 19,
+          "question": "Rising labor costs?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Higher wages could increase operating costs, requiring strategic adjustments to maintain profitability."
+            },
+            {
+              "text": "No",
+              "result": "Labor costs remain stable, ensuring predictable financial management and planning."
+            }
+          ]
+        },
+        {
+          "id": 20,
+          "question": "Slow market growth?",
+          "options": [
+            {
+              "text": "Yes",
+              "result": "Slow market growth could limit expansion opportunities, necessitating innovative strategies to capture new markets."
+            },
+            {
+              "text": "No",
+              "result": "Market growth remains favorable, supporting strategic initiatives and investments in growth opportunities."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+}

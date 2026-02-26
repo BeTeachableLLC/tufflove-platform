@@ -1,0 +1,51 @@
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/venv/
+
+# Node / Next
+**/node_modules/
+**/.next/
+**/out/
+**/.turbo/
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+
+# Env / secrets (DO NOT COMMIT)
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# Docker noise
+**/.dockerignore
+
+# Logs
+**/*.log
+
+# Env / secrets (DO NOT COMMIT)
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# Keep local backups out of git
+legacy/
+
+# Backup git dirs
+.git~
+**/.git~
+
+# Python build artifacts
+**/build/
+**/*.egg-info/
+
+# Supabase temp
+apps/**/supabase/.temp/

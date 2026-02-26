@@ -1,0 +1,51 @@
+const questionsData = [
+  {
+    id: 1,
+    question: "Does your business have a formalized accountability chart?",
+    options: [
+      {
+        label: "Yes",
+        quadrant: "Strength",
+        response:
+          "Great work! A formalized accountability chart ensures clarity in roles and responsibilities, which is essential for operational efficiency. Regularly review and update it to align with evolving business goals.",
+      },
+      {
+        label: "No",
+        quadrant: "Weakness",
+        response:
+          "Consider creating an accountability chart to define roles and responsibilities clearly. This will streamline decision-making and improve accountability across your organization.",
+      },
+      {
+        label: "Unsure",
+        quadrant: "Weakness",
+        response:
+          "Uncertainty here suggests a need for evaluation. Assess your organizational structure and develop a formal accountability chart to clarify roles and responsibilities.",
+      },
+    ],
+  },
+  {
+    id: 2,
+    question:
+      "Do you hold regularly scheduled leadership calibration meetings?",
+    options: [
+      {
+        label: "Yes",
+        quadrant: "Strength",
+        response:
+          "Excellent! Regular leadership meetings foster alignment and ensure your team is working towards common goals. Use these meetings to address challenges, share updates, and strategize for growth.",
+      },
+      {
+        label: "No",
+        quadrant: "Weakness",
+        response:
+          "This is an area for improvement. Scheduling regular leadership meetings can help align goals, address issues, and maintain a cohesive leadership team. Start by setting a recurring schedule and clear agendas.",
+      },
+      {
+        label: "Unsure",
+        quadrant: "Weakness",
+        response:
+          "Uncertainty here suggests a need for clarity. Evaluate the benefits of regular leadership meetings and consider implementing a schedule to improve team alignment and communication.",
+      },
+    ],
+  }
+]

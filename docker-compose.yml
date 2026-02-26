@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tufflove
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    environment:
+      ENV: local
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/tufflove
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      ADMIN_TOKEN: change_me
+      CORS_ALLOW_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+      DB_CONNECT_RETRIES: "30"
+      DB_CONNECT_DELAY_SEC: "0.5"
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8080:8080"
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    environment:
+      ENV: local
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/tufflove
+      REDIS_URL: redis://redis:6379/0
+      WORKER_ADMIN_TOKEN: ${WORKER_ADMIN_TOKEN:-change_me_worker}
+      ALLOW_RUN_FOREVER: "false"
+      INGEST_ROOT: /app
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8081:8081"
+
+volumes:
+  pgdata:

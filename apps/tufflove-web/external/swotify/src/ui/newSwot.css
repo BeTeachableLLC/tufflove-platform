@@ -1,0 +1,213 @@
+.controllBtn {
+  margin-left: 10px;
+  margin-top: 30px;
+  gap: 20px;
+  display: flex;
+  flex-direction: row;
+  justify-content: start;
+  align-items: center;
+}
+
+.prev {
+  padding: 15px;
+  border: 0.5px solid black;
+  border-radius: 50px !important;
+  width: 200px;
+  background: white;
+  color: black;
+  font-weight: bolder;
+  font-size: 15px;
+  cursor: pointer;
+  height: 55px;
+  font-family: "Poppins", sans-serif;
+  -webkit-border-radius: 50px !important;
+  -moz-border-radius: 50px !important;
+  -ms-border-radius: 50px !important;
+  -o-border-radius: 50px !important;
+}
+
+.prev:hover {
+  background: linear-gradient(to right, #16133d, #6357a5);
+  color: white;
+}
+
+.sub {
+  padding: 15px;
+  border: 0.5px solid black;
+  border-radius: 50px;
+  width: 200px;
+  background: white;
+  color: black;
+  font-weight: bolder;
+  font-size: 15px;
+  cursor: pointer;
+  font-family: "Poppins", sans-serif;
+  margin-top: auto;
+}
+
+.controllBtn .sub:hover {
+  background: linear-gradient(to right, #16133d, #6357a5);
+  color: white;
+}
+
+.opts:hover {
+  background-color: #12192a !important;
+  color: white;
+}
+
+.custom-box {
+  min-height: 30vh !important;
+}
+
+/* Hover effect */
+.custom-box:hover {
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2), 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+
+@media (max-width: 768px) {
+  body {
+    height: 100vh !important;
+    max-width: 512px !important;
+    overflow-x: hidden !important;
+  }
+
+  .inner {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .main {
+    width: 80vw !important;
+    max-width: 82vw !important;
+    margin-left: -10px !important;
+  }
+
+  .quest {
+    width: 75vw !important;
+    max-width: 75vw !important;
+  }
+
+  .riy {
+    width: 100vw !important;
+    max-width: 75vw !important;
+    margin-top: 2300px !important;
+    height: inherit !important;
+    margin-left: 10px !important;
+  }
+
+  .swotBox {
+    display: flex;
+    flex-direction: column !important;
+  }
+
+  .custom-box {
+    width: 70vw !important;
+    overflow-x: hidden;
+    height: 100vh !important;
+    max-height: 60vh !important;
+  }
+
+  .custom-box h3 {
+    padding-bottom: 32px !important;
+    overflow: hidden !important;
+  }
+
+  .boxInner {
+    overflow: hidden !important;
+    top: -10px !important;
+    max-height: 400px !important;
+    padding: 220px 0px 0px 0px !important;
+    position: relative;
+    /* background-color: red !important; */
+  }
+
+  .boxInner > * {
+    /* background-color: yellow !important; */
+    position: relative !important;
+    top: 50px !important;
+    margin-bottom: -150px;
+    font-size: 14px;
+    max-width: 350px !important;
+    max-height: 500px !important;
+    display: flex !important;
+    flex-direction: column-reverse !important;
+    /* padding: 10px; */
+  }
+
+  .boxInner .resq {
+    margin-top: -10px !important;
+    position: relative !important;
+    top: -210px !important;
+    /* margin-bottom: 2px; */
+  }
+
+  .boxInner .resp {
+    position: relative !important;
+    top: 110px !important;
+    margin-top: -35px !important;
+  }
+
+  .boxInner .ans {
+    position: relative !important;
+    top: -50px !important;
+    margin-top: -35px !important;
+  }
+
+  .formm {
+    display: flex;
+    flex-direction: column !important;
+  }
+
+  .headd {
+    left: 20px !important;
+    top: 200px !important;
+    margin-bottom: 80px !important;
+  }
+
+  .headd img {
+    margin-top: 40px !important;
+  }
+
+  .last-question {
+    position: relative !important;
+    left: -4px !important;
+    top: 100px !important;
+    margin-bottom: 30px !important;
+  }
+
+  .rizImg {
+    margin-top: -20px !important;
+    left: -30px !important;
+  }
+
+  .btns {
+    display: flex;
+    flex-direction: column !important;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+@media only screen and (device-width: 390px) and (device-height: 844px) {
+  .headd {
+    top: -15px !important;
+  }
+
+  .last-question {
+    position: relative !important;
+    left: -190px !important;
+    top: -120vw !important;
+    background-color: red !important;
+  }
+
+  .riy .riyImg {
+    position: relative !important;
+    left: -190px !important;
+    top: 50vw !important;
+  }
+
+  /* .boxInner > * {
+    max-height: 510px !important;
+    background-color: yellow !important;
+  } */
+}

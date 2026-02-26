@@ -1,0 +1,627 @@
+.feedbackCol {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.custom-box {
+  width: auto;
+  height: auto;
+  margin: auto;
+  padding: 20px;
+  background-color: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1), 0 6px 20px rgba(0, 0, 0, 0.1);
+  transition: box-shadow 0.3s ease-in-out;
+  text-align: left;
+  font-family: "Lato", sans-serif;
+  -webkit-transition: box-shadow 0.3s ease-in-out;
+  -moz-transition: box-shadow 0.3s ease-in-out;
+  -ms-transition: box-shadow 0.3s ease-in-out;
+  -o-transition: box-shadow 0.3s ease-in-out;
+}
+
+/* Hover effect */
+.custom-box:hover {
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2), 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+
+.custom-table {
+  width: 600px;
+  margin-top: 30px;
+  font-family: "Lato", sans-serif;
+}
+
+.resultHeader {
+  font-family: "Poppins", sans-serif;
+  font-size: 32px;
+  text-align: center;
+}
+
+.chart {
+  display: flex;
+  flex-direction: column !important;
+  align-items: center !important;
+  align-content: center !important;
+  justify-content: center !important;
+  font-family: "Poppins", sans-serif;
+  width: 700px;
+}
+
+.retake {
+  padding: 15px;
+  border: 0.5px solid black;
+  border-radius: 50px;
+  width: 200px;
+  background: white;
+  color: black;
+  font-weight: bolder;
+  font-size: 15px;
+  cursor: pointer;
+  font-family: "Poppins", sans-serif;
+}
+
+.pdf {
+  padding: 15px;
+  border: 0.5px solid black;
+  border-radius: 50px;
+  width: 200px;
+  background: white;
+  color: black;
+  font-weight: bolder;
+  font-size: 15px;
+  cursor: pointer;
+  font-family: "Poppins", sans-serif;
+  margin-bottom: 20px;
+}
+
+.pdf:hover {
+  background: linear-gradient(to right, #16133d, #6357a5);
+  color: white;
+}
+
+.retake:hover {
+  background: linear-gradient(to right, #16133d, #6357a5);
+  color: white;
+}
+
+.profileHead {
+  margin-left: 230px !important;
+  padding: 10px;
+}
+
+body {
+  padding: 0px;
+  margin: 0px;
+  width: 100vw;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  background-color: white;
+}
+
+body::-webkit-scrollbar {
+  display: none;
+  /* For Chrome, Safari, and Opera */
+}
+
+.App {
+  display: flex;
+  flex-direction: row;
+  margin-top: 100px;
+  /* justify-content: space-between; */
+}
+
+.App .left {
+  width: 900px;
+}
+
+.App .right img {
+  width: 500px !important;
+  height: 500px !important;
+}
+
+.overHeader {
+  margin-top: 50px;
+  font-family: "Poppins", sans-serif;
+  color: #16133d;
+}
+
+.App .left .renderedQuestion {
+  display: flex;
+  flex-direction: column;
+  justify-content: start;
+  align-items: start;
+  margin-top: 50px;
+  font-family: "Poppins", sans-serif;
+}
+
+.App .right img {
+  width: 60vw;
+  height: 100vh;
+  padding: 80px !important;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.sectionHeader {
+  font-family: "Lato", sans-serif;
+  font-weight: 400;
+  color: #12192a;
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: -0.025em;
+}
+
+.stepDiv {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 50px;
+}
+
+.questionTitle {
+  font-family: "Poppins", sans-serif;
+  font-weight: 500;
+  font-size: 32px;
+  line-height: 1;
+  letter-spacing: -0.05em;
+}
+
+.controllBtn {
+  margin-left: 10px;
+  margin-top: 30px;
+  gap: 20px;
+  display: flex;
+  flex-direction: row;
+  justify-content: start;
+  align-items: center;
+}
+
+.controllBtn .prev {
+  padding: 15px;
+  border: 0.5px solid black;
+  border-radius: 50px;
+  width: 200px;
+
+  background: white;
+  color: black;
+  font-weight: bolder;
+  font-size: 15px;
+  cursor: pointer;
+  height: 55px;
+  font-family: "Poppins", sans-serif;
+}
+
+.opts:hover {
+  background-color: #131a2a !important;
+  color: white;
+}
+
+.controllBtn .prev:hover {
+  background: linear-gradient(to right, #16133d, #6357a5);
+  color: white;
+}
+
+.controllBtn .sub {
+  padding: 15px;
+  border: 0.5px solid black;
+  border-radius: 50px;
+  width: 200px;
+  background: white;
+  color: black;
+  font-weight: bolder;
+  font-size: 15px;
+  cursor: pointer;
+  font-family: "Poppins", sans-serif;
+  margin-top: auto;
+}
+
+.controllBtn .sub:hover {
+  background: linear-gradient(to right, #16133d, #6357a5);
+  color: white;
+}
+
+.progress-container {
+  width: 100%;
+  background-color: #f3f3f3;
+  border-radius: 8px;
+  margin: 20px 0;
+  overflow: hidden;
+  height: 20px;
+}
+
+.progress-bar {
+  height: 100%;
+  background-color: #131a2a;
+  width: 0%;
+  /* Start at 0%, will update dynamically */
+  transition: width 0.3s ease-in-out;
+}
+
+.innerResults {
+  display: flex;
+  flex-direction: column;
+}
+
+.feedback {
+  width: 700px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.riz {
+  display: flex;
+  flex-direction: column !important;
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+.dou {
+  width: 400px !important;
+  height: 400px !important;
+}
+
+@media (max-width: 768px) {
+  .details {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .details input {
+    width: 70vw;
+    margin: 10px;
+  }
+
+  .chart {
+    margin-right: 60vw !important;
+  }
+
+  html,
+  body {
+    overflow-x: hidden;
+  }
+
+  .profiling {
+    max-width: 75vw !important;
+    color: white;
+  }
+
+  .App {
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: center !important;
+    align-items: center !important;
+    margin-left: 68vw;
+    overflow-x: hidden !important;
+    position: relative !important;
+    left: 2vw !important;
+  }
+
+  * {
+    position: relative !important;
+  }
+
+  .hea {
+    position: relative !important;
+    left: 280px !important;
+    /* top: 10; */
+  }
+
+  .last {
+    position: relative !important;
+    left: 255px !important;
+  }
+
+
+  .charDiv,
+  .resultHeader {
+    position: relative !important;
+    left: 55px !important;
+    bottom: 20px !important;
+    max-width: 300px !important;
+  }
+
+  /* .App {
+    margin-top: 40px !important;
+    flex-direction: column-reverse;
+    justify-content: center;
+    align-items: center;
+  } */
+
+  .options {
+    font-size: 14px !important;
+    max-width: 270px;
+  }
+
+  .intro {
+    max-width: 90vw !important;
+  }
+
+  .progress-container {
+    width: 80vw !important;
+  }
+
+  .custom-table {
+    width: 400px !important;
+  }
+
+  .colorBox {
+    width: 400px !important;
+  }
+
+  .colorBox {
+    max-width: 70vw;
+  }
+
+    .feedbackCol,
+    .fourTable {
+      display: flex;
+      flex-direction: column !important;
+      align-items: center !important;
+      justify-content: center !important;
+      /* this is the control of the feedback col for the mobile version */
+      margin-left: -20vw;
+      /* background-color: red !important; */
+    }
+
+  .custInner {
+    max-width: 270px !important;
+  }
+
+  .feedback h3 {
+    font-size: 18px;
+  }
+
+  .feedbackCol h2 {
+    font-size: 18px;
+  }
+
+  .feedbackColTable {
+    width: 80vw;
+    margin-left: 3vw;
+  }
+
+  .resultHeader {
+    font-size: 20px !important;
+    margin-right: 60vw;
+    max-width: 250px;
+  }
+
+  .riz {
+    display: flex;
+    flex-direction: column !important;
+    justify-content: center !important;
+    align-items: center !important;
+    margin-right: 30vw !important;
+
+    background: url("./bgcover.jpg");
+    background-repeat: no-repeat;
+    background-size: cover;
+    /* background: linear-gradient(right, #6357a5, #556cb3, #131A2A); */
+    -moz-osx-font-smoothing: grayscale;
+    /* background: linear-gradient(to right, #131A2A, #6357a5); */
+    overflow-x: hidden !important;
+  }
+
+  .feedback {
+    width: 100vw;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    /* margin-left: 13vw !important; */
+    position: relative !important;
+    /* left: -6px !important; */
+  }
+
+  .dou {
+    width: 350px !important;
+    height: 350px !important;
+  }
+
+  .innerResults {
+    margin: 0px;
+    padding: 0px;
+  }
+
+  .App .left,
+  .App .right {
+    width: 100%;
+    /* Full width on mobile */
+  }
+
+  .App .right img {
+    padding: 0px !important;
+  }
+
+  .App .right img {
+    width: 100% !important;
+    /* Adjust image to fit screen width */
+    height: auto !important;
+    /* Maintain aspect ratio */
+  }
+
+  .controllBtn {
+    gap: 10px;
+    display: flex;
+    flex-direction: row;
+    font-size: 12px;
+    padding: 10px;
+    width: 250px;
+  }
+
+  .opt {
+    padding: 20px !important;
+  }
+
+  .foot {
+    /* background-color: red !important; */
+  }
+
+  .downPdf {
+    display: flex;
+    flex-direction: column !important;
+  }
+
+  .riz .feds{
+/* background-color: red !important; */
+  }
+
+  .fedHead{
+    font-size: 14px !important;
+    max-width: 200px !important;
+  }
+
+  .safari-browser * {
+    /* background-color: green !important; */
+    position: relative !important;
+    z-index: 0 !important;
+    /* left: 3vw !important; */
+  }
+
+  .safari-browser {
+    /* background-color: red !important;  */
+    margin-left: 0vw !important;
+    overflow-x: hidden !important;
+    /* background-color: green !important; */
+  }
+
+  .safari-browser .App{
+    position: relative !important;
+    left: 4vw !important;
+  }
+
+
+  .safari-browser .riz .feds {
+    position: relative !important;
+    left: 15vw !important;
+  }
+
+  .safari-browser .riz .feds2 {
+    position: relative !important;
+    left: 15vw !important;
+  }
+
+
+  .safari-browser .riz .feedback {
+    position: relative !important;
+    right: 4vw !important;
+  }
+
+  .safari-browser .riz .resultHeader {
+    position: relative !important;
+    left: 10vw !important;
+  }
+
+  .safari-browser .riz .chartDiv {
+    position: relative !important;
+    left: 10vw !important;
+  }
+
+  .safari-browser .App .inCont{
+    position: relative !important;
+    left: 7vw !important;
+  }
+
+  .safari-browser .inCont {
+    position: relative !important;
+    left: 0.3vw !important;
+    z-index: 10000 !important;
+    /* background-color: green !important; */
+  }
+
+  .safari-browser .btnGr {
+    /* background-color: red !important; */
+    position: relative !important;
+    /* right: 5vw !important; */
+    max-width: 400px !important;
+  }
+
+  .safari-browser .options {
+    max-width: 200px !important;
+    /* background-color: green !important; */
+
+    /* color: red !important; */
+  }
+
+  .safari-browser .progress-container {
+    position: relative !important;
+    /* left: -15vw !important; */
+    max-width: 250px;
+  }
+
+  .safari-browser .intro {
+    max-width: 310px !important;
+    /* color: red !important; */
+  }
+
+  .safari-browser .details input {
+    max-width: 250px !important;
+    /* background-color: red !important; */
+
+  }
+
+  .safari-browser .topicHeader {
+    max-width: 210px !important;
+    /* color: red !important; */
+  }
+
+  .safari-browser .foot {
+    font-size: 10px !important;
+    /* color: red !important; */
+  }
+
+  .safari-browser .feedbackCol,
+  .fourTable {
+    display: flex;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    /* this is the control of the feedback col for the mobile version */
+    margin-left: -30vw;
+    /* background-color: yellowgreen !important; */
+  }
+
+}
+
+
+
+@media only screen and (device-width: 390px) and (device-height: 844px) {
+ 
+  /* .riz{
+    position: relative !important;
+    margin-right: 0px !important;
+    margin-left: 20px !important;
+    background-color: red !important;
+    z-index: 9999 !important;
+  } */
+
+  .riz .resultHeader {
+    position: relative !important;
+    right: 20vw !important;
+    max-width: 300px !important;
+  }
+
+  .riz .dou {
+    position: relative !important;
+    right: 5vw !important;
+  }
+
+
+  .riz .downPdf {
+    position: relative !important;
+    right: 5vw !important;
+  }
+
+  .riz .feds {
+    position: relative !important;
+    left: -10vw !important;
+  }
+
+  .riz .feds2 {
+    position: relative !important;
+    left: -10vw !important;
+  }
+}
