@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import Link from "next/link";
 import { chat, enqueueFamilyTask, runWorkerOnce } from "@/src/lib/agentClient";
 
 const FAMILYOPS_TASK_TYPES = [
@@ -108,6 +109,11 @@ export default function AgentTestPage() {
   return (
     <main style={{ maxWidth: 960, margin: "0 auto", padding: 24, fontFamily: "sans-serif" }}>
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Agent Test</h1>
+      <p style={{ marginBottom: 8 }}>
+        <Link href="/familyops/approvals" style={{ textDecoration: "underline" }}>
+          FamilyOps Approvals
+        </Link>
+      </p>
       <p style={{ marginBottom: 24 }}>
         Sends requests to <code>/v1/chat</code> and <code>/v1/task/enqueue</code> on the ZeroClaw
         API.
