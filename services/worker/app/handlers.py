@@ -199,12 +199,11 @@ def handle_ghl_social_publish(payload: dict[str, Any]) -> dict[str, Any]:
     brand_id = str(payload.get("brand_id", "")).strip()
     location_id = str(payload.get("location_id", "")).strip()
     if not brand_id or not location_id:
-<<<<<<< Updated upstream
-        return {"ok": False, "note": "brand_and_location_required", "status": "failed"}
+        return {"ok": False, "note": "missing_brand_or_location", "status": "failed"}
 
     brand = get_brand(tenant_id, brand_id) if tenant_id else None
     if brand is None or brand.get("status") != "active":
-        return {"ok": False, "note": "brand_inactive_or_missing", "status": "failed"}
+        return {"ok": False, "note": "brand_inactive_or_missing", "status": "failed", "brand_id": brand_id}
 
     configured_location = str(brand.get("ghl_location_id") or "").strip()
     if configured_location and configured_location != location_id:
@@ -212,56 +211,20 @@ def handle_ghl_social_publish(payload: dict[str, Any]) -> dict[str, Any]:
             "ok": False,
             "note": "brand_location_mismatch",
             "status": "failed",
-            "expected_location_id": configured_location,
-            "location_id": location_id,
-=======
-        return {
-            "ok": False,
-            "note": "brand_and_location_required",
-            "status": "blocked",
-        }
-
-    brand = get_brand(tenant_id, brand_id) if tenant_id else None
-    if brand is None or brand.get("status") != "active":
-        return {
-            "ok": False,
-            "note": "brand_inactive_or_missing",
-            "status": "blocked",
-            "brand_id": brand_id,
-        }
-
-    configured_location = str(brand.get("ghl_location_id") or "").strip()
-    if not configured_location:
-        return {
-            "ok": False,
-            "note": "brand_location_not_set",
-            "status": "blocked",
-            "brand_id": brand_id,
-        }
-    if configured_location != location_id:
-        return {
-            "ok": False,
-            "note": "brand_location_mismatch",
-            "status": "blocked",
             "brand_id": brand_id,
             "location_id": location_id,
             "expected_location_id": configured_location,
->>>>>>> Stashed changes
         }
 
     connection = get_ghl_connection(tenant_id, location_id) if tenant_id else None
     if connection is None:
-<<<<<<< Updated upstream
-        return {"ok": False, "note": "ghl_not_connected", "status": "failed"}
-=======
         return {
             "ok": False,
-            "note": "ghl_not_connected",
-            "status": "blocked",
+            "note": "missing_ghl_connection",
+            "status": "failed",
             "brand_id": brand_id,
             "location_id": location_id,
         }
->>>>>>> Stashed changes
 
     platforms = payload.get("platforms")
     if not isinstance(platforms, list) or not platforms:
@@ -279,10 +242,6 @@ def handle_ghl_social_publish(payload: dict[str, Any]) -> dict[str, Any]:
         "scheduled_at": payload.get("scheduled_at"),
         "dry_run": True,
     }
-<<<<<<< Updated upstream
-=======
-
->>>>>>> Stashed changes
     return {
         "ok": True,
         "note": "ghl_dry_run",
