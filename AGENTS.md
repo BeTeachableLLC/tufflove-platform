@@ -24,3 +24,7 @@
 - Plan first
 - Then implement
 - Provide diff summary + commands run + validation output
+
+## Git Safety (non-negotiable)
+- Never commit with merge conflict markers present. Must run: `git grep -n '<<<<<<<\|>>>>>>>' -- .` and it must be empty before any commit.
+- Never run `git stash pop` unless you immediately resolve conflicts, re-run the grep, then run validation before committing.
