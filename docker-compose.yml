@@ -25,6 +25,10 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       ADMIN_TOKEN: change_me
       CORS_ALLOW_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+      GHL_CLIENT_ID: ${GHL_CLIENT_ID:-}
+      GHL_CLIENT_SECRET: ${GHL_CLIENT_SECRET:-}
+      GHL_REDIRECT_URI: ${GHL_REDIRECT_URI:-http://localhost:3000/api/ghl/callback}
+      GHL_TOKEN_URL: ${GHL_TOKEN_URL:-https://services.leadconnectorhq.com/oauth/token}
       DB_CONNECT_RETRIES: "30"
       DB_CONNECT_DELAY_SEC: "0.5"
     depends_on:

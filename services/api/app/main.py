@@ -1,6 +1,11 @@
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
+<<<<<<< Updated upstream
+=======
+from datetime import datetime, timedelta, timezone
+from typing import Literal
+>>>>>>> Stashed changes
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -92,7 +97,11 @@ class AdminBrandUpdateRequest(BaseModel):
     ghl_location_id: str | None = None
     timezone: str = "America/New_York"
     default_platforms: list[str] = Field(default_factory=list)
+<<<<<<< Updated upstream
     status: str = "active"
+=======
+    status: Literal["active", "inactive"] = "active"
+>>>>>>> Stashed changes
 
 
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
@@ -121,7 +130,14 @@ TASK_ALLOWLIST_BY_TENANT = {
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_GHL_AUTH_URL = "https://marketplace.gohighlevel.com/oauth/chooselocation"
+<<<<<<< Updated upstream
 DEFAULT_GHL_SCOPES = "contacts.readonly contacts.write opportunities.readonly opportunities.write calendars.readonly calendars.write"
+=======
+DEFAULT_GHL_SCOPES = (
+    "contacts.readonly contacts.write opportunities.readonly opportunities.write "
+    "socialplanner/post.readonly socialplanner/post.write"
+)
+>>>>>>> Stashed changes
 
 
 def require_admin(request: Request) -> None:
@@ -134,7 +150,11 @@ def require_admin(request: Request) -> None:
 def required_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
+<<<<<<< Updated upstream
         raise HTTPException(status_code=500, detail=f"{name} is not set")
+=======
+        raise HTTPException(status_code=500, detail=f"{name} is not configured")
+>>>>>>> Stashed changes
     return value
 
 
@@ -339,7 +359,18 @@ def ghl_oauth_start(tenant_id: str):
     redirect_uri = required_env("GHL_REDIRECT_URI")
     auth_base = os.getenv("GHL_AUTH_URL", DEFAULT_GHL_AUTH_URL).strip() or DEFAULT_GHL_AUTH_URL
     scopes = os.getenv("GHL_SCOPES", DEFAULT_GHL_SCOPES).strip() or DEFAULT_GHL_SCOPES
+<<<<<<< Updated upstream
     auth_url = f"{auth_base}?{urlencode({'response_type': 'code', 'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scopes, 'state': tenant_id})}"
+=======
+    query_params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": scopes,
+        "state": tenant_id,
+    }
+    auth_url = f"{auth_base}?{urlencode(query_params)}"
+>>>>>>> Stashed changes
     return {"auth_url": auth_url}
 
 
@@ -396,22 +427,34 @@ def ghl_oauth_callback(req: GhlOAuthCallbackRequest):
         expires_in_sec = max(int(expires_in), 0)
     except (TypeError, ValueError):
         expires_in_sec = 3600
+<<<<<<< Updated upstream
 
+=======
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in_sec)
+>>>>>>> Stashed changes
     raw_location_id = req.location_id or token_data.get("locationId") or token_data.get("location_id")
     location_id = str(raw_location_id).strip() if raw_location_id else ""
     if not location_id:
         raise HTTPException(status_code=400, detail="location_id is required for callback")
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
     upsert_ghl_connection(
         tenant_id=req.tenant_id,
         location_id=location_id,
         access_token=access_token,
         refresh_token=refresh_token,
+<<<<<<< Updated upstream
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in_sec),
+=======
+        expires_at=expires_at,
+>>>>>>> Stashed changes
     )
     return {"ok": True, "tenant_id": req.tenant_id, "location_id": location_id}
 
 
+<<<<<<< Updated upstream
 @app.get("/v1/ghl/connections", dependencies=[Depends(require_admin)])
 def ghl_connections(tenant_id: str):
     tenant_bundle = get_tenant_policy_bundle(tenant_id)
@@ -420,13 +463,54 @@ def ghl_connections(tenant_id: str):
     return {"tenant_id": tenant_id, "connections": list_ghl_connections(tenant_id)}
 
 
+=======
+>>>>>>> Stashed changes
 @app.get("/v1/ghl/oauth/status")
 def ghl_oauth_status(tenant_id: str):
     tenant_bundle = get_tenant_policy_bundle(tenant_id)
     if tenant_bundle is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
     connections = list_ghl_connections(tenant_id)
+<<<<<<< Updated upstream
     return {"ok": True, "tenant_id": tenant_id, "connected": bool(connections), "connections": connections}
+=======
+    if not connections:
+        return {"ok": True, "tenant_id": tenant_id, "connected": False}
+    return {
+        "ok": True,
+        "tenant_id": tenant_id,
+        "connected": True,
+        "connections": [
+            {
+                "location_id": conn["location_id"],
+                "status": conn["status"],
+                "expires_at": conn["expires_at"],
+            }
+            for conn in connections
+        ],
+    }
+
+
+@app.get("/v1/ghl/connections", dependencies=[Depends(require_admin)])
+def ghl_connections(tenant_id: str):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    connections = list_ghl_connections(tenant_id)
+    return {
+        "tenant_id": tenant_id,
+        "connections": [
+            {
+                "location_id": conn["location_id"],
+                "status": conn["status"],
+                "expires_at": conn["expires_at"],
+                "created_at": conn["created_at"],
+                "updated_at": conn["updated_at"],
+            }
+            for conn in connections
+        ],
+    }
+>>>>>>> Stashed changes
 
 
 @app.get("/v1/admin/tenants", dependencies=[Depends(require_admin)])
@@ -455,6 +539,41 @@ def admin_update_tenant_policy(tenant_id: str, payload: AdminPolicyUpdate):
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Tenant not found")
+
+
+@app.get("/v1/admin/brands/{tenant_id}", dependencies=[Depends(require_admin)])
+def admin_list_brands(tenant_id: str):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"tenant_id": tenant_id, "brands": list_brands(tenant_id)}
+
+
+@app.put("/v1/admin/brand/{tenant_id}/{brand_id}", dependencies=[Depends(require_admin)])
+def admin_update_brand(tenant_id: str, brand_id: str, payload: AdminBrandUpdateRequest):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    existing = get_brand(tenant_id, brand_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+    normalized_location_id = (payload.ghl_location_id or "").strip() or None
+    normalized_platforms = [p.strip() for p in payload.default_platforms if isinstance(p, str) and p.strip()]
+
+    try:
+        updated = update_brand_location(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            ghl_location_id=normalized_location_id,
+            timezone=payload.timezone.strip() or "America/New_York",
+            default_platforms=normalized_platforms,
+            status=payload.status,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    return {"ok": True, "brand": updated}
 
 
 @app.get("/v1/admin/tasks/{tenant_id}", dependencies=[Depends(require_admin)])

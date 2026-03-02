@@ -1,23 +1,23 @@
 import { NextResponse } from "next/server";
-import { proxyAdminRequest } from "../../../_proxy";
+import { proxyAdminRequest } from "../../_proxy";
 import { requireFamilyOpsAdmin } from "@/utils/familyopsRbac";
 
 type RouteParams = {
   params: Promise<{
-    taskId: string;
+    brandId: string;
   }>;
 };
 
-export async function POST(request: Request, { params }: RouteParams) {
+export async function PUT(request: Request, { params }: RouteParams) {
   const access = await requireFamilyOpsAdmin();
   if (!access.ok) {
     return NextResponse.json({ error: access.reason }, { status: access.status });
   }
-  const { taskId: rawTaskId } = await params;
-  const taskId = encodeURIComponent(rawTaskId);
+  const { brandId: rawBrandId } = await params;
+  const brandId = encodeURIComponent(rawBrandId);
   const body = await request.text();
-  return proxyAdminRequest(`/v1/admin/task/${taskId}/reject`, {
-    method: "POST",
+  return proxyAdminRequest(`/v1/admin/brand/familyops/${brandId}`, {
+    method: "PUT",
     headers: { "content-type": "application/json" },
     body,
   });

@@ -7,5 +7,5 @@ export async function GET() {
   if (!access.ok) {
     return NextResponse.json({ error: access.reason }, { status: access.status });
   }
-  return proxyAdminRequest("/v1/admin/tasks/familyops");
+  return proxyAdminRequest("/v1/admin/brands/familyops");
 }

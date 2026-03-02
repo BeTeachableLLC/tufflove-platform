@@ -1,8 +1,8 @@
 import { redirect } from "next/navigation";
-import ApprovalsClient from "./ApprovalsClient";
 import { requireFamilyOpsAdmin } from "@/utils/familyopsRbac";
+import BrandsClient from "./BrandsClient";
 
-export default async function FamilyOpsApprovalsPage() {
+export default async function FamilyOpsBrandsPage() {
   const access = await requireFamilyOpsAdmin();
 
   if (!access.ok && access.status === 401) {
@@ -12,7 +12,7 @@ export default async function FamilyOpsApprovalsPage() {
   if (!access.ok && access.status === 403) {
     return (
       <main style={{ maxWidth: 860, margin: "0 auto", padding: 24, fontFamily: "sans-serif" }}>
-        <h1 style={{ fontSize: 30, fontWeight: 700, marginBottom: 8 }}>FamilyOps Approval Center</h1>
+        <h1 style={{ fontSize: 30, fontWeight: 700, marginBottom: 8 }}>FamilyOps Brands</h1>
         <div
           style={{
             marginTop: 16,
@@ -30,5 +30,5 @@ export default async function FamilyOpsApprovalsPage() {
     );
   }
 
-  return <ApprovalsClient />;
+  return <BrandsClient />;
 }

@@ -1,4 +1,6 @@
+import { NextResponse } from "next/server";
 import { proxyAdminRequest } from "../../../_proxy";
+import { requireFamilyOpsAdmin } from "@/utils/familyopsRbac";
 
 type RouteParams = {
   params: Promise<{
@@ -7,6 +9,10 @@ type RouteParams = {
 };
 
 export async function POST(request: Request, { params }: RouteParams) {
+  const access = await requireFamilyOpsAdmin();
+  if (!access.ok) {
+    return NextResponse.json({ error: access.reason }, { status: access.status });
+  }
   const { taskId: rawTaskId } = await params;
   const taskId = encodeURIComponent(rawTaskId);
   const body = await request.text();

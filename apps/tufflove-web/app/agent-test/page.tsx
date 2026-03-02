@@ -113,6 +113,14 @@ export default function AgentTestPage() {
         <Link href="/familyops/approvals" style={{ textDecoration: "underline" }}>
           FamilyOps Approvals
         </Link>
+        {" · "}
+        <Link href="/familyops/ghl" style={{ textDecoration: "underline" }}>
+          FamilyOps GHL
+        </Link>
+        {" · "}
+        <Link href="/familyops/brands" style={{ textDecoration: "underline" }}>
+          FamilyOps Brands
+        </Link>
       </p>
       <p style={{ marginBottom: 24 }}>
         Sends requests to <code>/v1/chat</code> and <code>/v1/task/enqueue</code> on the ZeroClaw
