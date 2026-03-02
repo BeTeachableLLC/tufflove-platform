@@ -10,6 +10,17 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+FAMILYOPS_BRANDS: list[tuple[str, str, str]] = [
+    ("fresh-start-group", "Fresh Start Group", "active"),
+    ("fresh-start-realty", "Fresh Start Realty", "active"),
+    ("fresh-start-renovations", "Fresh Start Renovations", "active"),
+    ("fresh-start-team", "Fresh Start Team", "active"),
+    ("beteachable", "BeTeachable", "active"),
+    ("training-for-leaders", "Training for Leaders", "active"),
+    ("valor-behavioral-health", "Valor Behavioral Health", "active"),
+    ("corent", "CoRent", "inactive"),
+]
+
 
 def get_dsn() -> str:
     dsn = os.getenv("DATABASE_URL", "").strip()
@@ -145,6 +156,42 @@ def init_db() -> None:
                 ON knowledge_chunks USING gin (content_tsv);
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ghl_connections(
+                    tenant_id text NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    location_id text NOT NULL,
+                    access_token text NOT NULL,
+                    refresh_token text NOT NULL,
+                    expires_at timestamptz NOT NULL,
+                    status text NOT NULL DEFAULT 'active',
+                    created_at timestamptz NOT NULL DEFAULT now(),
+                    updated_at timestamptz NOT NULL DEFAULT now(),
+                    PRIMARY KEY (tenant_id, location_id)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS brands(
+                    id text PRIMARY KEY,
+                    tenant_id text NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    name text NOT NULL,
+                    ghl_location_id text NULL,
+                    timezone text NOT NULL DEFAULT 'America/New_York',
+                    default_platforms text[] NOT NULL DEFAULT '{}',
+                    status text NOT NULL DEFAULT 'active',
+                    created_at timestamptz NOT NULL DEFAULT now(),
+                    updated_at timestamptz NOT NULL DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_brands_tenant
+                ON brands (tenant_id, status, updated_at DESC);
+                """
+            )
         conn.commit()
 
 
@@ -186,6 +233,14 @@ def seed_defaults() -> None:
                     ("familyops", 30000, Decimal("15")),
                     ("corent", 10000, Decimal("5")),
                 ],
+            )
+            cur.executemany(
+                """
+                INSERT INTO brands (id, tenant_id, name, status)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING;
+                """,
+                [(brand_id, "familyops", name, status) for brand_id, name, status in FAMILYOPS_BRANDS],
             )
         conn.commit()
 
@@ -657,3 +712,255 @@ def search_knowledge_chunks(tenant_id: str, query: str, limit: int = 5) -> list[
         }
         for row in rows
     ]
+
+
+def upsert_ghl_connection(
+    *,
+    tenant_id: str,
+    location_id: str,
+    access_token: str,
+    refresh_token: str,
+    expires_at: Any,
+    status: str = "active",
+) -> dict[str, Any]:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ghl_connections (
+                    tenant_id,
+                    location_id,
+                    access_token,
+                    refresh_token,
+                    expires_at,
+                    status,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (tenant_id, location_id) DO UPDATE SET
+                    access_token = EXCLUDED.access_token,
+                    refresh_token = EXCLUDED.refresh_token,
+                    expires_at = EXCLUDED.expires_at,
+                    status = EXCLUDED.status,
+                    updated_at = now()
+                RETURNING
+                    tenant_id,
+                    location_id,
+                    status,
+                    expires_at,
+                    created_at,
+                    updated_at;
+                """,
+                (tenant_id, location_id, access_token, refresh_token, expires_at, status),
+            )
+            row = cur.fetchone()
+        conn.commit()
+
+    if row is None:
+        raise RuntimeError("Failed to upsert GHL connection")
+    return {
+        "tenant_id": row["tenant_id"],
+        "location_id": row["location_id"],
+        "status": row["status"],
+        "expires_at": _to_iso(row["expires_at"]),
+        "created_at": _to_iso(row["created_at"]),
+        "updated_at": _to_iso(row["updated_at"]),
+    }
+
+
+def get_ghl_connection(tenant_id: str, location_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    tenant_id,
+                    location_id,
+                    access_token,
+                    refresh_token,
+                    expires_at,
+                    status,
+                    created_at,
+                    updated_at
+                FROM ghl_connections
+                WHERE tenant_id = %s
+                  AND location_id = %s;
+                """,
+                (tenant_id, location_id),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        return None
+    return {
+        "tenant_id": row["tenant_id"],
+        "location_id": row["location_id"],
+        "access_token": row["access_token"],
+        "refresh_token": row["refresh_token"],
+        "expires_at": _to_iso(row["expires_at"]),
+        "status": row["status"],
+        "created_at": _to_iso(row["created_at"]),
+        "updated_at": _to_iso(row["updated_at"]),
+    }
+
+
+def list_ghl_connections(tenant_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    tenant_id,
+                    location_id,
+                    expires_at,
+                    status,
+                    created_at,
+                    updated_at
+                FROM ghl_connections
+                WHERE tenant_id = %s
+                ORDER BY updated_at DESC;
+                """,
+                (tenant_id,),
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "tenant_id": row["tenant_id"],
+            "location_id": row["location_id"],
+            "expires_at": _to_iso(row["expires_at"]),
+            "status": row["status"],
+            "created_at": _to_iso(row["created_at"]),
+            "updated_at": _to_iso(row["updated_at"]),
+        }
+        for row in rows
+    ]
+
+
+def list_brands(tenant_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    tenant_id,
+                    name,
+                    ghl_location_id,
+                    timezone,
+                    default_platforms,
+                    status,
+                    created_at,
+                    updated_at
+                FROM brands
+                WHERE tenant_id = %s
+                ORDER BY id;
+                """,
+                (tenant_id,),
+            )
+            rows = cur.fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "tenant_id": row["tenant_id"],
+            "name": row["name"],
+            "ghl_location_id": row["ghl_location_id"],
+            "timezone": row["timezone"],
+            "default_platforms": row["default_platforms"] or [],
+            "status": row["status"],
+            "created_at": _to_iso(row["created_at"]),
+            "updated_at": _to_iso(row["updated_at"]),
+        }
+        for row in rows
+    ]
+
+
+def get_brand(tenant_id: str, brand_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    tenant_id,
+                    name,
+                    ghl_location_id,
+                    timezone,
+                    default_platforms,
+                    status,
+                    created_at,
+                    updated_at
+                FROM brands
+                WHERE tenant_id = %s
+                  AND id = %s;
+                """,
+                (tenant_id, brand_id),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "tenant_id": row["tenant_id"],
+        "name": row["name"],
+        "ghl_location_id": row["ghl_location_id"],
+        "timezone": row["timezone"],
+        "default_platforms": row["default_platforms"] or [],
+        "status": row["status"],
+        "created_at": _to_iso(row["created_at"]),
+        "updated_at": _to_iso(row["updated_at"]),
+    }
+
+
+def update_brand_location(
+    *,
+    tenant_id: str,
+    brand_id: str,
+    ghl_location_id: str | None,
+    timezone: str,
+    default_platforms: list[str],
+    status: str,
+) -> dict[str, Any]:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE brands
+                SET ghl_location_id = %s,
+                    timezone = %s,
+                    default_platforms = %s,
+                    status = %s,
+                    updated_at = now()
+                WHERE tenant_id = %s
+                  AND id = %s
+                RETURNING
+                    id,
+                    tenant_id,
+                    name,
+                    ghl_location_id,
+                    timezone,
+                    default_platforms,
+                    status,
+                    created_at,
+                    updated_at;
+                """,
+                (ghl_location_id, timezone, default_platforms, status, tenant_id, brand_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+
+    if row is None:
+        raise KeyError(f"Brand not found: {tenant_id}/{brand_id}")
+    return {
+        "id": row["id"],
+        "tenant_id": row["tenant_id"],
+        "name": row["name"],
+        "ghl_location_id": row["ghl_location_id"],
+        "timezone": row["timezone"],
+        "default_platforms": row["default_platforms"] or [],
+        "status": row["status"],
+        "created_at": _to_iso(row["created_at"]),
+        "updated_at": _to_iso(row["updated_at"]),
+    }

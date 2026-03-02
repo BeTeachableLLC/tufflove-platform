@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from app.db import get_approval, replace_knowledge_source
+from app.db import get_approval, get_brand, get_ghl_connection, replace_knowledge_source
 
 DEFAULT_TEXT_EXTENSIONS = {".md", ".txt", ".markdown", ".csv", ".json"}
 DEFAULT_BINARY_META_EXTENSIONS = {".mp3", ".wav", ".m4a", ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".zip"}
@@ -195,7 +195,54 @@ def handle_ghl_social_publish(payload: dict[str, Any]) -> dict[str, Any]:
     if approval is None or approval.get("status") != "approved":
         return {"ok": False, "note": "approval_required", "status": "blocked"}
 
-    return {"ok": True, "note": "publish_stub_ok", "status": "would_publish"}
+    tenant_id = str(payload.get("tenant_id", "")).strip()
+    brand_id = str(payload.get("brand_id", "")).strip()
+    location_id = str(payload.get("location_id", "")).strip()
+    if not brand_id or not location_id:
+        return {"ok": False, "note": "brand_and_location_required", "status": "failed"}
+
+    brand = get_brand(tenant_id, brand_id) if tenant_id else None
+    if brand is None or brand.get("status") != "active":
+        return {"ok": False, "note": "brand_inactive_or_missing", "status": "failed"}
+
+    configured_location = str(brand.get("ghl_location_id") or "").strip()
+    if configured_location and configured_location != location_id:
+        return {
+            "ok": False,
+            "note": "brand_location_mismatch",
+            "status": "failed",
+            "expected_location_id": configured_location,
+            "location_id": location_id,
+        }
+
+    connection = get_ghl_connection(tenant_id, location_id) if tenant_id else None
+    if connection is None:
+        return {"ok": False, "note": "ghl_not_connected", "status": "failed"}
+
+    platforms = payload.get("platforms")
+    if not isinstance(platforms, list) or not platforms:
+        platforms = brand.get("default_platforms") or ["fb"]
+
+    payload_to_send = {
+        "tenant_id": tenant_id,
+        "brand_id": brand_id,
+        "location_id": location_id,
+        "task_id": str(task_id),
+        "platforms": platforms,
+        "timezone": payload.get("timezone") or brand.get("timezone"),
+        "content": payload.get("content") or payload.get("message") or payload.get("topic"),
+        "media_urls": payload.get("media_urls", []),
+        "scheduled_at": payload.get("scheduled_at"),
+        "dry_run": True,
+    }
+    return {
+        "ok": True,
+        "note": "ghl_dry_run",
+        "status": "would_publish",
+        "brand_id": brand_id,
+        "location_id": location_id,
+        "payload_to_send": payload_to_send,
+    }
 
 
 handler_map: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {

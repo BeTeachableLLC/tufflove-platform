@@ -121,6 +121,80 @@ def get_approval(task_id: str) -> dict[str, Any] | None:
     }
 
 
+def get_ghl_connection(tenant_id: str, location_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    tenant_id,
+                    location_id,
+                    access_token,
+                    refresh_token,
+                    expires_at,
+                    status,
+                    created_at,
+                    updated_at
+                FROM ghl_connections
+                WHERE tenant_id = %s
+                  AND location_id = %s;
+                """,
+                (tenant_id, location_id),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        return None
+    return {
+        "tenant_id": row["tenant_id"],
+        "location_id": row["location_id"],
+        "access_token": row["access_token"],
+        "refresh_token": row["refresh_token"],
+        "expires_at": row["expires_at"].isoformat() if row["expires_at"] else None,
+        "status": row["status"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
+
+
+def get_brand(tenant_id: str, brand_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    tenant_id,
+                    name,
+                    ghl_location_id,
+                    timezone,
+                    default_platforms,
+                    status,
+                    created_at,
+                    updated_at
+                FROM brands
+                WHERE tenant_id = %s
+                  AND id = %s;
+                """,
+                (tenant_id, brand_id),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "tenant_id": row["tenant_id"],
+        "name": row["name"],
+        "ghl_location_id": row["ghl_location_id"],
+        "timezone": row["timezone"],
+        "default_platforms": row["default_platforms"] or [],
+        "status": row["status"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
+
+
 def replace_knowledge_source(
     *,
     tenant_id: str,

@@ -1,5 +1,7 @@
 from __future__ import annotations
+from datetime import datetime, timedelta, timezone
 import os
+from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
@@ -10,16 +12,22 @@ from dotenv import load_dotenv
 from zeroclaw import ZeroClawRuntime, ZeroClawPolicy, ToolRegistry, ToolSpec, AutonomyLevel
 from app.db import (
     create_approval,
+    get_brand,
+    get_ghl_connection,
     get_approval,
     get_task_log,
     get_tenant_policy_bundle,
     init_db,
+    list_brands,
+    list_ghl_connections,
     list_task_logs,
     list_tenants,
     search_knowledge_chunks,
     set_approval,
     seed_defaults,
+    upsert_ghl_connection,
     upsert_task_log,
+    update_brand_location,
     update_tenant_policy,
 )
 from app.queue import enqueue
@@ -74,6 +82,19 @@ class AdminIngestRequest(BaseModel):
     max_files: int = Field(default=100, ge=1, le=2000)
 
 
+class GhlOAuthCallbackRequest(BaseModel):
+    code: str
+    tenant_id: str
+    location_id: str | None = None
+
+
+class AdminBrandUpdateRequest(BaseModel):
+    ghl_location_id: str | None = None
+    timezone: str = "America/New_York"
+    default_platforms: list[str] = Field(default_factory=list)
+    status: str = "active"
+
+
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
 def tool_db_write(payload): return {"ok": True, "data": "db.write stub", "payload": payload}
 def tool_ghl_read(payload): return {"ok": True, "data": "ghl.read stub", "payload": payload}
@@ -99,6 +120,8 @@ TASK_ALLOWLIST_BY_TENANT = {
 }
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+DEFAULT_GHL_AUTH_URL = "https://marketplace.gohighlevel.com/oauth/chooselocation"
+DEFAULT_GHL_SCOPES = "contacts.readonly contacts.write opportunities.readonly opportunities.write calendars.readonly calendars.write"
 
 
 def require_admin(request: Request) -> None:
@@ -106,6 +129,13 @@ def require_admin(request: Request) -> None:
     provided = request.headers.get("x-admin-token", "")
     if provided != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise HTTPException(status_code=500, detail=f"{name} is not set")
+    return value
 
 
 def build_runtime_for_tenant(tenant_bundle: dict) -> ZeroClawRuntime:
@@ -264,6 +294,14 @@ def enqueue_task(req: TaskEnqueueRequest):
     allowed_task_types = TASK_ALLOWLIST_BY_TENANT.get(req.tenant_id, [])
     if req.task_type not in allowed_task_types:
         raise HTTPException(status_code=403, detail="Task type is not allowed for tenant")
+    if req.task_type == "ghl.social.publish":
+        brand_id = str((req.payload or {}).get("brand_id", "")).strip()
+        location_id = str((req.payload or {}).get("location_id", "")).strip()
+        if not brand_id or not location_id:
+            raise HTTPException(
+                status_code=400,
+                detail="ghl.social.publish payload must include brand_id and location_id",
+            )
 
     task_id = str(uuid4())
     task = AsyncTask(
@@ -287,6 +325,108 @@ def enqueue_task(req: TaskEnqueueRequest):
 
     enqueue(task.model_dump(mode="json"))
     return {"ok": True, "task_id": task_id, "approval_required": approval_required}
+
+
+@app.get("/v1/ghl/oauth/start")
+def ghl_oauth_start(tenant_id: str):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant_bundle["status"] != "active":
+        raise HTTPException(status_code=403, detail="Tenant is not active")
+
+    client_id = required_env("GHL_CLIENT_ID")
+    redirect_uri = required_env("GHL_REDIRECT_URI")
+    auth_base = os.getenv("GHL_AUTH_URL", DEFAULT_GHL_AUTH_URL).strip() or DEFAULT_GHL_AUTH_URL
+    scopes = os.getenv("GHL_SCOPES", DEFAULT_GHL_SCOPES).strip() or DEFAULT_GHL_SCOPES
+    auth_url = f"{auth_base}?{urlencode({'response_type': 'code', 'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scopes, 'state': tenant_id})}"
+    return {"auth_url": auth_url}
+
+
+@app.post("/v1/ghl/oauth/callback")
+def ghl_oauth_callback(req: GhlOAuthCallbackRequest):
+    if not req.code or not req.tenant_id:
+        raise HTTPException(status_code=400, detail="Missing code or tenant_id")
+
+    tenant_bundle = get_tenant_policy_bundle(req.tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant_bundle["status"] != "active":
+        raise HTTPException(status_code=403, detail="Tenant is not active")
+
+    client_id = required_env("GHL_CLIENT_ID")
+    client_secret = required_env("GHL_CLIENT_SECRET")
+    redirect_uri = required_env("GHL_REDIRECT_URI")
+    token_url = required_env("GHL_TOKEN_URL")
+
+    try:
+        with httpx.Client(timeout=float(os.getenv("GHL_TOKEN_TIMEOUT_SEC", "20"))) as client:
+            response = client.post(
+                token_url,
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "code": req.code,
+                    "redirect_uri": redirect_uri,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"GHL token exchange failed: {exc}") from exc
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"GHL token exchange error {response.status_code}: {response.text[:240]}",
+        )
+
+    try:
+        token_data = response.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="GHL token response was not valid JSON") from exc
+
+    access_token = str(token_data.get("access_token", "")).strip()
+    refresh_token = str(token_data.get("refresh_token", "")).strip()
+    if not access_token or not refresh_token:
+        raise HTTPException(status_code=502, detail="GHL token response missing access/refresh token")
+
+    expires_in = token_data.get("expires_in", 3600)
+    try:
+        expires_in_sec = max(int(expires_in), 0)
+    except (TypeError, ValueError):
+        expires_in_sec = 3600
+
+    raw_location_id = req.location_id or token_data.get("locationId") or token_data.get("location_id")
+    location_id = str(raw_location_id).strip() if raw_location_id else ""
+    if not location_id:
+        raise HTTPException(status_code=400, detail="location_id is required for callback")
+
+    upsert_ghl_connection(
+        tenant_id=req.tenant_id,
+        location_id=location_id,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in_sec),
+    )
+    return {"ok": True, "tenant_id": req.tenant_id, "location_id": location_id}
+
+
+@app.get("/v1/ghl/connections", dependencies=[Depends(require_admin)])
+def ghl_connections(tenant_id: str):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"tenant_id": tenant_id, "connections": list_ghl_connections(tenant_id)}
+
+
+@app.get("/v1/ghl/oauth/status")
+def ghl_oauth_status(tenant_id: str):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    connections = list_ghl_connections(tenant_id)
+    return {"ok": True, "tenant_id": tenant_id, "connected": bool(connections), "connections": connections}
 
 
 @app.get("/v1/admin/tenants", dependencies=[Depends(require_admin)])
@@ -320,6 +460,37 @@ def admin_update_tenant_policy(tenant_id: str, payload: AdminPolicyUpdate):
 @app.get("/v1/admin/tasks/{tenant_id}", dependencies=[Depends(require_admin)])
 def admin_list_tasks(tenant_id: str):
     return {"tasks": list_task_logs(tenant_id)}
+
+
+@app.get("/v1/admin/brands/{tenant_id}", dependencies=[Depends(require_admin)])
+def admin_list_brands(tenant_id: str):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"tenant_id": tenant_id, "brands": list_brands(tenant_id)}
+
+
+@app.put("/v1/admin/brand/{tenant_id}/{brand_id}", dependencies=[Depends(require_admin)])
+def admin_update_brand(tenant_id: str, brand_id: str, payload: AdminBrandUpdateRequest):
+    existing = get_brand(tenant_id, brand_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    if brand_id == "corent":
+        raise HTTPException(status_code=403, detail="CoRent is inactive and cannot be mapped")
+
+    normalized_location_id = (payload.ghl_location_id or "").strip() or None
+    try:
+        updated = update_brand_location(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            ghl_location_id=normalized_location_id,
+            timezone=payload.timezone.strip() or "America/New_York",
+            default_platforms=payload.default_platforms,
+            status=payload.status.strip() or "active",
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    return {"ok": True, "brand": updated}
 
 
 @app.get("/v1/admin/task/{task_id}", dependencies=[Depends(require_admin)])
