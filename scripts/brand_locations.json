@@ -1,0 +1,19 @@
+{
+  "tenant_id": "familyops",
+  "brands": [
+    {
+      "brand_id": "beteachable",
+      "ghl_location_id": "loc-demo-001",
+      "timezone": "America/New_York",
+      "default_platforms": ["fb", "ig"],
+      "status": "active"
+    },
+    {
+      "brand_id": "fresh-start-group",
+      "ghl_location_id": "loc-demo-002",
+      "timezone": "America/New_York",
+      "default_platforms": ["fb"],
+      "status": "active"
+    }
+  ]
+}
