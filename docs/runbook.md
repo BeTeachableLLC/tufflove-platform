@@ -41,11 +41,16 @@ cd services/worker
 ```
 
 ### API tests (Sprint 4 auth regression)
-`services/api` imports local `zeroclaw`, so set `PYTHONPATH`:
+`services/api/requirements.txt` already installs local `zeroclaw` via editable path.
 ```bash
 cd services/api
-PYTHONPATH='../../packages/zeroclaw' ./.venv/bin/python -m unittest -v tests.test_sprint4_auth_regression
+./.venv/bin/python -m pip install -r requirements.txt
+./.venv/bin/python -m unittest -v tests.test_sprint4_auth_regression
 ```
+
+### CI parity
+- Workflow file: `.github/workflows/ci.yml`
+- Keep local validation commands aligned with CI job commands.
 
 ## Branch / PR / Merge Cleanup Workflow
 This is the workflow used in recent sprint work.
@@ -74,4 +79,3 @@ git pull --ff-only
 git fetch --prune
 git branch --merged | grep -v '^\*' | grep -v ' main$' | xargs -n 1 git branch -d
 ```
-
