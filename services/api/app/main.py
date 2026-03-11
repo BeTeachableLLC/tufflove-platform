@@ -285,7 +285,7 @@ def chat(req: ChatRequest):
     return result
 
 
-@app.post("/v1/task/enqueue")
+@app.post("/v1/task/enqueue", dependencies=[Depends(require_admin)])
 def enqueue_task(req: TaskEnqueueRequest):
     if not req.tenant_id or not req.user_id or not req.task_type:
         raise HTTPException(status_code=400, detail="Missing required fields")
