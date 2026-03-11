@@ -10,6 +10,11 @@ const FAMILYOPS_TASK_TYPES = [
   "embed.ingest",
 ] as const;
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
 function pretty(value: unknown): string {
   if (value === null || value === undefined) return "";
   try {
@@ -34,7 +39,7 @@ export default function AgentPage() {
   const [message, setMessage] = useState("Build me a weekly execution plan for TUFF LOVE.");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
-  const [chatResult, setChatResult] = useState<any>(null);
+  const [chatResult, setChatResult] = useState<unknown>(null);
 
   const [taskType, setTaskType] = useState<string>("ghl.social.plan");
   const [taskPayload, setTaskPayload] = useState(
@@ -42,15 +47,17 @@ export default function AgentPage() {
   );
   const [queueLoading, setQueueLoading] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
-  const [queueResult, setQueueResult] = useState<any>(null);
+  const [queueResult, setQueueResult] = useState<unknown>(null);
 
   const [workerLoading, setWorkerLoading] = useState(false);
   const [workerError, setWorkerError] = useState<string | null>(null);
-  const [workerResult, setWorkerResult] = useState<any>(null);
+  const [workerResult, setWorkerResult] = useState<unknown>(null);
 
   const answer = useMemo(() => {
-    if (!chatResult || typeof chatResult.answer !== "string") return "";
-    return normalizeAnswer(chatResult.answer);
+    const chatData = asRecord(chatResult);
+    const answerRaw = typeof chatData?.answer === "string" ? chatData.answer : "";
+    if (!answerRaw) return "";
+    return normalizeAnswer(answerRaw);
   }, [chatResult]);
 
   async function onChat(event: FormEvent<HTMLFormElement>) {

@@ -65,7 +65,7 @@ export async function chat(message: string, userId: string = "web-demo"): Promis
 
 export async function enqueueFamilyTask(
   task_type: string,
-  payload: any,
+  payload: unknown,
   userId: string = "moe",
 ): Promise<unknown> {
   return postSameOriginJson("/api/familyops/task/enqueue", {
