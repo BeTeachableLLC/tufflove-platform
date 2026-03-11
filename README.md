@@ -1,5 +1,7 @@
 # TUFF LOVE ZeroClaw Platform (Starter)
 
+Primary runbook: `docs/runbook.md`
+
 One governed agent spine powering:
 - tufflove.us
 - corent.ai
