@@ -50,10 +50,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/worker/requirements.txt
 
-      - name: Install local zeroclaw and API dependencies
-        run: |
-          python -m pip install -e packages/zeroclaw
-          python -m pip install -r services/api/requirements.txt
+      - name: Install API dependencies
+        working-directory: services/api
+        run: python -m pip install -r requirements.txt
 
       - name: Worker guardrail tests
         working-directory: services/worker
@@ -61,5 +60,4 @@ jobs:
 
       - name: API auth regression tests
         working-directory: services/api
-        run: PYTHONPATH='../../packages/zeroclaw' python -m unittest -v tests.test_sprint4_auth_regression
-
+        run: python -m unittest -v tests.test_sprint4_auth_regression
