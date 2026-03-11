@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireFamilyOpsAdmin } from "@/utils/familyopsRbac";
 
 const DEFAULT_WORKER_API_URL = "http://127.0.0.1:8081";
 
@@ -8,6 +9,11 @@ function getWorkerBaseUrl(): string {
 }
 
 export async function POST() {
+  const access = await requireFamilyOpsAdmin();
+  if (!access.ok) {
+    return NextResponse.json({ error: access.reason }, { status: access.status });
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
   const workerToken = process.env.WORKER_ADMIN_TOKEN?.trim();

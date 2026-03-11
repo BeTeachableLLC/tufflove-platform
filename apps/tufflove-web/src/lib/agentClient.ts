@@ -68,7 +68,7 @@ export async function enqueueFamilyTask(
   payload: any,
   userId: string = "moe",
 ): Promise<unknown> {
-  return postJson("/v1/task/enqueue", {
+  return postSameOriginJson("/api/familyops/task/enqueue", {
     tenant_id: "familyops",
     user_id: userId,
     task_type,
