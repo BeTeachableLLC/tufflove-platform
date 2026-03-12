@@ -33,6 +33,17 @@ from app.db import (
 )
 from app.queue import enqueue
 from app.tasks import AsyncTask
+from app.operator_service import (
+    activate_operator_version,
+    create_operator_version,
+    get_operator_mission,
+    get_operator_version,
+    init_operator_tables,
+    list_operator_versions,
+    list_operators,
+    run_operator_version,
+    update_operator_version,
+)
 from app.trigger_service import (
     TRIGGER_TYPES,
     apply_trigger_patch,
@@ -138,10 +149,57 @@ class TriggerPatchRequest(BaseModel):
     dedupe_window_seconds: int | None = Field(default=None, ge=1, le=86400)
 
 
+VersionStatus = Literal["draft", "validated", "active", "archived"]
+ValidationStatus = Literal["pending", "passed", "failed"]
+
+
+class OperatorVersionCreateRequest(BaseModel):
+    tenant_id: str
+    operator_id: str
+    version_label: str | None = None
+    status: VersionStatus = "draft"
+    goal: str = ""
+    instruction_json: dict = Field(default_factory=dict)
+    tool_manifest: list[str] = Field(default_factory=list)
+    validation_summary: str = ""
+    validation_status: ValidationStatus = "pending"
+    created_by: str = "admin"
+
+
+class OperatorVersionPatchRequest(BaseModel):
+    version_label: str | None = None
+    status: VersionStatus | None = None
+    goal: str | None = None
+    instruction_json: dict | None = None
+    tool_manifest: list[str] | None = None
+    validation_summary: str | None = None
+    validation_status: ValidationStatus | None = None
+    updated_by: str = "admin"
+
+
+class OperatorVersionActivateRequest(BaseModel):
+    activated_by: str = "admin"
+
+
+class OperatorRunRequest(BaseModel):
+    tenant_id: str
+    user_id: str
+    operator_version_id: str
+    input_payload: dict = Field(default_factory=dict)
+
+
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
 def tool_db_write(payload): return {"ok": True, "data": "db.write stub", "payload": payload}
 def tool_ghl_read(payload): return {"ok": True, "data": "ghl.read stub", "payload": payload}
 def tool_ghl_write(payload): return {"ok": True, "data": "ghl.write stub", "payload": payload}
+
+
+RUNNER_TOOL_IMPLS = {
+    "db.read": tool_db_read,
+    "db.write": tool_db_write,
+    "ghl.read": tool_ghl_read,
+    "ghl.write": tool_ghl_write,
+}
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -300,6 +358,7 @@ def startup() -> None:
     init_db()
     seed_defaults()
     init_trigger_tables()
+    init_operator_tables()
 
 
 @app.get("/healthz")
@@ -489,6 +548,113 @@ def patch_trigger_endpoint(trigger_id: str, body: TriggerPatchRequest):
     if updated is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
     return {"ok": True, "trigger": updated}
+
+
+@app.post("/v1/operator/version", dependencies=[Depends(require_admin)])
+def create_operator_version_endpoint(body: OperatorVersionCreateRequest):
+    tenant_bundle = get_tenant_policy_bundle(body.tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant_bundle["status"] != "active":
+        raise HTTPException(status_code=403, detail="Tenant is not active")
+
+    version = create_operator_version(
+        tenant_id=body.tenant_id,
+        operator_id=body.operator_id.strip(),
+        version_label=body.version_label.strip() if body.version_label else None,
+        status=body.status,
+        goal=body.goal,
+        instruction_json=body.instruction_json or {},
+        tool_manifest=body.tool_manifest or [],
+        validation_summary=body.validation_summary,
+        validation_status=body.validation_status,
+        created_by=body.created_by.strip() or "admin",
+    )
+    return {"ok": True, "version": version}
+
+
+@app.get("/v1/operator/operators/{tenant_id}", dependencies=[Depends(require_admin)])
+def list_operators_endpoint(tenant_id: str):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"tenant_id": tenant_id, "operators": list_operators(tenant_id)}
+
+
+@app.get("/v1/operator/versions", dependencies=[Depends(require_admin)])
+def list_operator_versions_endpoint(tenant_id: str, operator_id: str):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if not operator_id.strip():
+        raise HTTPException(status_code=400, detail="operator_id is required")
+    versions = list_operator_versions(tenant_id, operator_id.strip())
+    return {"tenant_id": tenant_id, "operator_id": operator_id.strip(), "versions": versions}
+
+
+@app.get("/v1/operator/version/{version_id}", dependencies=[Depends(require_admin)])
+def get_operator_version_endpoint(version_id: str):
+    version = get_operator_version(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Operator version not found")
+    return version
+
+
+@app.patch("/v1/operator/version/{version_id}", dependencies=[Depends(require_admin)])
+def patch_operator_version_endpoint(version_id: str, body: OperatorVersionPatchRequest):
+    patch = body.model_dump(exclude_unset=True)
+    updated_by = str(patch.pop("updated_by", body.updated_by)).strip() or "admin"
+    if not patch:
+        version = get_operator_version(version_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="Operator version not found")
+        return {"ok": True, "version": version}
+
+    updated = update_operator_version(version_id, patch, updated_by=updated_by)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Operator version not found")
+    return {"ok": True, "version": updated}
+
+
+@app.post("/v1/operator/version/{version_id}/activate", dependencies=[Depends(require_admin)])
+def activate_operator_version_endpoint(version_id: str, body: OperatorVersionActivateRequest):
+    try:
+        version = activate_operator_version(version_id, activated_by=body.activated_by.strip() or "admin")
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Operator version not found")
+    return {"ok": True, "version": version}
+
+
+@app.post("/v1/operator/run", dependencies=[Depends(require_admin)])
+def run_operator_by_version_endpoint(body: OperatorRunRequest):
+    tenant_bundle = get_tenant_policy_bundle(body.tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant_bundle["status"] != "active":
+        raise HTTPException(status_code=403, detail="Tenant is not active")
+
+    try:
+        mission = run_operator_version(
+            tenant_id=body.tenant_id,
+            user_id=body.user_id.strip() or "operator-runner",
+            operator_version_id=body.operator_version_id.strip(),
+            input_payload=body.input_payload or {},
+            tenant_tool_allowlist=tenant_bundle["tool_allowlist"],
+            tool_impls=RUNNER_TOOL_IMPLS,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Operator version not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "mission": mission}
+
+
+@app.get("/v1/operator/mission/{mission_id}", dependencies=[Depends(require_admin)])
+def get_operator_mission_endpoint(mission_id: str):
+    mission = get_operator_mission(mission_id)
+    if mission is None:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    return mission
 
 
 @app.get("/v1/ghl/oauth/start")
