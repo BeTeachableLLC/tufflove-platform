@@ -5,6 +5,12 @@
 - Git remote: `https://github.com/Beteachable/tufflove-platform.git`
 - Use this repo for all current TUFF LOVE platform work. Do not treat `legacy/` as the active build target.
 
+## AWS Deployment Prep (Sprint 10.5)
+- Architecture: `docs/aws-deployment-architecture.md`
+- Deployment runbook: `docs/aws-deployment-runbook.md`
+- Supabase exit prerequisites: `docs/sprint11-supabase-exit-prereqs.md`
+- CoRent assimilation planning: `docs/corent-assimilation-plan.md`
+
 ## Local Startup
 Run from repo root (`/Users/moemathews/Desktop/Social Media Admin/tufflove-platform`).
 
