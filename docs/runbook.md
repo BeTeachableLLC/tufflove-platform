@@ -41,10 +41,11 @@ cd services/worker
 ```
 
 ### API tests (Sprint 4 auth regression)
-`services/api` imports local `zeroclaw`, so set `PYTHONPATH`:
+Run from `services/api` so the local editable `../../packages/zeroclaw` path in `requirements.txt` resolves correctly:
 ```bash
 cd services/api
-PYTHONPATH='../../packages/zeroclaw' ./.venv/bin/python -m unittest -v tests.test_sprint4_auth_regression
+python -m pip install -r requirements.txt
+python -m unittest -v tests.test_sprint4_auth_regression
 ```
 
 ## Branch / PR / Merge Cleanup Workflow
@@ -74,4 +75,3 @@ git pull --ff-only
 git fetch --prune
 git branch --merged | grep -v '^\*' | grep -v ' main$' | xargs -n 1 git branch -d
 ```
-
