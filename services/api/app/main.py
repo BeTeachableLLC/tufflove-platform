@@ -39,6 +39,8 @@ from app.operator_service import (
     get_operator_mission,
     get_operator_version,
     init_operator_tables,
+    list_operator_mission_events,
+    list_operator_missions,
     list_operator_versions,
     list_operators,
     run_operator_version,
@@ -186,6 +188,9 @@ class OperatorRunRequest(BaseModel):
     user_id: str
     operator_version_id: str
     input_payload: dict = Field(default_factory=dict)
+    source: Literal["manual", "trigger", "webhook", "internal"] = "manual"
+    trigger_id: str | None = None
+    approval_task_id: str | None = None
 
 
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
@@ -641,6 +646,9 @@ def run_operator_by_version_endpoint(body: OperatorRunRequest):
             input_payload=body.input_payload or {},
             tenant_tool_allowlist=tenant_bundle["tool_allowlist"],
             tool_impls=RUNNER_TOOL_IMPLS,
+            source=body.source,
+            trigger_id=body.trigger_id,
+            approval_task_id=body.approval_task_id,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Operator version not found")
@@ -649,12 +657,53 @@ def run_operator_by_version_endpoint(body: OperatorRunRequest):
     return {"ok": True, "mission": mission}
 
 
+@app.get("/v1/operator/missions", dependencies=[Depends(require_admin)])
+def list_operator_missions_endpoint(
+    tenant_id: str,
+    operator_id: str | None = None,
+    operator_version_id: str | None = None,
+    status: str | None = None,
+    source: str | None = None,
+    started_after: datetime | None = None,
+    started_before: datetime | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    result = list_operator_missions(
+        tenant_id=tenant_id,
+        operator_id=operator_id,
+        operator_version_id=operator_version_id,
+        status=status,
+        source=source,
+        started_after=started_after,
+        started_before=started_before,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "tenant_id": tenant_id,
+        "missions": result["missions"],
+        "total": result["total"],
+        "limit": result["limit"],
+        "offset": result["offset"],
+    }
+
+
 @app.get("/v1/operator/mission/{mission_id}", dependencies=[Depends(require_admin)])
 def get_operator_mission_endpoint(mission_id: str):
     mission = get_operator_mission(mission_id)
     if mission is None:
         raise HTTPException(status_code=404, detail="Mission not found")
-    return mission
+    audit_events = list_operator_mission_events(mission_id, limit=200)
+    trigger = None
+    trigger_id = str(mission.get("trigger_id") or "").strip()
+    if trigger_id:
+        trigger = get_trigger(trigger_id)
+    return {**mission, "audit_events": audit_events, "trigger": trigger}
 
 
 @app.get("/v1/ghl/oauth/start")
