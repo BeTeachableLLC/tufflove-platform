@@ -14,6 +14,7 @@ from app.db import connect
 OPERATOR_VERSION_STATUSES = {"draft", "validated", "active", "archived"}
 VALIDATION_STATUSES = {"pending", "passed", "failed"}
 MISSION_STATUSES = {"running", "completed", "partial", "blocked", "failed"}
+MISSION_SOURCES = {"manual", "trigger", "webhook", "internal"}
 
 SENSITIVE_KEYS = {
     "access_token",
@@ -84,6 +85,13 @@ def _normalize_version_status(raw: str) -> str:
     return candidate
 
 
+def _normalize_mission_source(raw: str | None) -> str:
+    candidate = str(raw or "manual").strip().lower()
+    if candidate not in MISSION_SOURCES:
+        return "manual"
+    return candidate
+
+
 def _redact_value(value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
@@ -118,17 +126,23 @@ def _serialize_operator_version(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _serialize_mission(row: dict[str, Any]) -> dict[str, Any]:
+    redacted_tool_log = row.get("redacted_tool_log") or []
     return {
         "id": row["id"],
         "tenant_id": row["tenant_id"],
         "user_id": row["user_id"],
         "operator_id": row["operator_id"],
         "operator_version_id": row["operator_version_id"],
+        "trigger_id": row.get("trigger_id"),
+        "source": row.get("source") or "manual",
+        "approval_task_id": row.get("approval_task_id"),
         "status": row["status"],
         "summary": row["summary"],
         "input_payload": row["input_payload"] or {},
         "output_payload": row["output_payload"] or {},
-        "redacted_tool_log": row["redacted_tool_log"] or [],
+        "redacted_tool_log": redacted_tool_log,
+        "tool_calls_redacted": redacted_tool_log,
+        "artifacts": row.get("artifacts") or [],
         "token_estimate": int(row["token_estimate"] or 0),
         "cost_estimate": float(row["cost_estimate"] or 0),
         "error": row["error"],
@@ -215,11 +229,15 @@ def init_operator_tables() -> None:
                     user_id text NOT NULL,
                     operator_id text NOT NULL,
                     operator_version_id text NOT NULL REFERENCES operator_versions(id) ON DELETE RESTRICT,
+                    trigger_id text,
+                    source text NOT NULL DEFAULT 'manual',
+                    approval_task_id text,
                     status text NOT NULL DEFAULT 'running',
                     summary text NOT NULL DEFAULT '',
                     input_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
                     output_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
                     redacted_tool_log jsonb NOT NULL DEFAULT '[]'::jsonb,
+                    artifacts jsonb NOT NULL DEFAULT '[]'::jsonb,
                     token_estimate int NOT NULL DEFAULT 0,
                     cost_estimate numeric NOT NULL DEFAULT 0,
                     error text,
@@ -241,6 +259,31 @@ def init_operator_tables() -> None:
                 CREATE INDEX IF NOT EXISTS idx_operator_missions_version
                 ON operator_missions (operator_version_id, created_at DESC);
                 """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_operator_missions_tenant_operator
+                ON operator_missions (tenant_id, operator_id, created_at DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_operator_missions_tenant_status
+                ON operator_missions (tenant_id, status, created_at DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_operator_missions_trigger
+                ON operator_missions (trigger_id, created_at DESC)
+                WHERE trigger_id IS NOT NULL;
+                """
+            )
+            cur.execute("ALTER TABLE operator_missions ADD COLUMN IF NOT EXISTS trigger_id text;")
+            cur.execute("ALTER TABLE operator_missions ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'manual';")
+            cur.execute("ALTER TABLE operator_missions ADD COLUMN IF NOT EXISTS approval_task_id text;")
+            cur.execute(
+                "ALTER TABLE operator_missions ADD COLUMN IF NOT EXISTS artifacts jsonb NOT NULL DEFAULT '[]'::jsonb;"
             )
             cur.execute(
                 """
@@ -796,8 +839,12 @@ def _create_mission_record(
     user_id: str,
     operator_id: str,
     operator_version_id: str,
+    trigger_id: str | None,
+    source: str,
+    approval_task_id: str | None,
     input_payload: dict[str, Any],
 ) -> None:
+    mission_source = _normalize_mission_source(source)
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -808,12 +855,15 @@ def _create_mission_record(
                     user_id,
                     operator_id,
                     operator_version_id,
+                    trigger_id,
+                    source,
+                    approval_task_id,
                     status,
                     summary,
                     input_payload,
                     started_at
                 )
-                VALUES (%s, %s, %s, %s, %s, 'running', 'runner_execution_started', %s, now());
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'running', 'runner_execution_started', %s, now());
                 """,
                 (
                     mission_id,
@@ -821,6 +871,9 @@ def _create_mission_record(
                     user_id,
                     operator_id,
                     operator_version_id,
+                    trigger_id,
+                    mission_source,
+                    approval_task_id,
                     _to_jsonb(_redact_value(input_payload)),
                 ),
             )
@@ -834,6 +887,7 @@ def _finalize_mission_record(
     summary: str,
     output_payload: dict[str, Any],
     redacted_tool_log: list[dict[str, Any]],
+    artifacts: list[dict[str, Any]] | None = None,
     token_estimate: int,
     cost_estimate: float,
     error: str | None,
@@ -849,6 +903,7 @@ def _finalize_mission_record(
                     summary = %s,
                     output_payload = %s,
                     redacted_tool_log = %s,
+                    artifacts = %s,
                     token_estimate = %s,
                     cost_estimate = %s,
                     error = %s,
@@ -861,6 +916,7 @@ def _finalize_mission_record(
                     summary,
                     _to_jsonb(_redact_value(output_payload)),
                     _to_jsonb(_redact_value(redacted_tool_log)),
+                    _to_jsonb(_redact_value(artifacts or [])),
                     max(int(token_estimate), 0),
                     Decimal(str(max(float(cost_estimate), 0))),
                     error,
@@ -881,11 +937,15 @@ def get_operator_mission(mission_id: str) -> dict[str, Any] | None:
                     user_id,
                     operator_id,
                     operator_version_id,
+                    trigger_id,
+                    source,
+                    approval_task_id,
                     status,
                     summary,
                     input_payload,
                     output_payload,
                     redacted_tool_log,
+                    artifacts,
                     token_estimate,
                     cost_estimate,
                     error,
@@ -904,6 +964,153 @@ def get_operator_mission(mission_id: str) -> dict[str, Any] | None:
     return _serialize_mission(row)
 
 
+def list_operator_missions(
+    *,
+    tenant_id: str,
+    operator_id: str | None = None,
+    operator_version_id: str | None = None,
+    status: str | None = None,
+    source: str | None = None,
+    started_after: datetime | None = None,
+    started_before: datetime | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    safe_limit = min(max(int(limit), 1), 200)
+    safe_offset = max(int(offset), 0)
+
+    conditions = ["tenant_id = %s"]
+    params: list[Any] = [tenant_id]
+
+    normalized_operator_id = str(operator_id or "").strip()
+    if normalized_operator_id:
+        conditions.append("operator_id = %s")
+        params.append(normalized_operator_id)
+
+    normalized_version_id = str(operator_version_id or "").strip()
+    if normalized_version_id:
+        conditions.append("operator_version_id = %s")
+        params.append(normalized_version_id)
+
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status:
+        conditions.append("status = %s")
+        params.append(normalized_status)
+
+    normalized_source = str(source or "").strip().lower()
+    if normalized_source:
+        conditions.append("source = %s")
+        params.append(normalized_source)
+
+    if started_after is not None:
+        conditions.append("started_at >= %s")
+        params.append(_as_utc(started_after))
+
+    if started_before is not None:
+        conditions.append("started_at <= %s")
+        params.append(_as_utc(started_before))
+
+    where_clause = " AND ".join(conditions)
+
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT count(*) AS total
+                FROM operator_missions
+                WHERE {where_clause};
+                """,
+                tuple(params),
+            )
+            total_row = cur.fetchone() or {}
+
+            query_params = [*params, safe_limit, safe_offset]
+            cur.execute(
+                f"""
+                SELECT
+                    id,
+                    tenant_id,
+                    user_id,
+                    operator_id,
+                    operator_version_id,
+                    trigger_id,
+                    source,
+                    approval_task_id,
+                    status,
+                    summary,
+                    input_payload,
+                    output_payload,
+                    redacted_tool_log,
+                    artifacts,
+                    token_estimate,
+                    cost_estimate,
+                    error,
+                    started_at,
+                    finished_at,
+                    created_at,
+                    updated_at
+                FROM operator_missions
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT %s
+                OFFSET %s;
+                """,
+                tuple(query_params),
+            )
+            rows = cur.fetchall()
+
+    return {
+        "missions": [_serialize_mission(row) for row in rows],
+        "total": int(total_row.get("total") or 0),
+        "limit": safe_limit,
+        "offset": safe_offset,
+    }
+
+
+def list_operator_mission_events(mission_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(int(limit), 1), 500)
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    tenant_id,
+                    operator_id,
+                    operator_version_id,
+                    mission_id,
+                    event_type,
+                    event_status,
+                    detail,
+                    metadata,
+                    created_by,
+                    created_at
+                FROM operator_audit_events
+                WHERE mission_id = %s
+                ORDER BY created_at ASC, id ASC
+                LIMIT %s;
+                """,
+                (mission_id, safe_limit),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "tenant_id": row["tenant_id"],
+            "operator_id": row["operator_id"],
+            "operator_version_id": row["operator_version_id"],
+            "mission_id": row["mission_id"],
+            "event_type": row["event_type"],
+            "event_status": row["event_status"],
+            "detail": row["detail"],
+            "metadata": row["metadata"] or {},
+            "created_by": row["created_by"],
+            "created_at": _to_iso(row["created_at"]),
+        }
+        for row in rows
+    ]
+
+
 def run_operator_version(
     *,
     tenant_id: str,
@@ -912,6 +1119,9 @@ def run_operator_version(
     input_payload: dict[str, Any],
     tenant_tool_allowlist: list[str],
     tool_impls: dict[str, Callable[[dict[str, Any]], Any]],
+    source: str = "manual",
+    trigger_id: str | None = None,
+    approval_task_id: str | None = None,
 ) -> dict[str, Any]:
     version = _get_operator_version_row(operator_version_id)
     if version is None:
@@ -927,6 +1137,9 @@ def run_operator_version(
         user_id=user_id,
         operator_id=operator_id,
         operator_version_id=operator_version_id,
+        trigger_id=(str(trigger_id).strip() or None) if trigger_id is not None else None,
+        source=source,
+        approval_task_id=(str(approval_task_id).strip() or None) if approval_task_id is not None else None,
         input_payload=input_payload if isinstance(input_payload, dict) else {},
     )
     record_operator_event(
@@ -1225,6 +1438,7 @@ def run_operator_version(
         summary=summary,
         output_payload={"runner_status": "COMPLETED", "outputs": outputs, "instruction_source": "persisted"},
         redacted_tool_log=redacted_logs,
+        artifacts=outputs,
         token_estimate=max(len(redacted_logs), 1) * 50,
         cost_estimate=0.0,
         error=None,
