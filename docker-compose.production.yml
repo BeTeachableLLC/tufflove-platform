@@ -1,0 +1,172 @@
+name: tufflove-platform-prod
+
+services:
+  reverse-proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    ports:
+      - "${PROXY_HTTP_PORT:-80}:80"
+    volumes:
+      - ./deploy/nginx/tufflove.conf.template:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - edge
+      - app
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/tufflove-web/Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL}
+      NEXT_PUBLIC_AGENT_API_URL: ${NEXT_PUBLIC_AGENT_API_URL}
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      AGENT_ADMIN_TOKEN: ${AGENT_ADMIN_TOKEN}
+      FAMILYOPS_ADMIN_EMAILS: ${FAMILYOPS_ADMIN_EMAILS}
+      WORKER_API_URL: ${WORKER_API_URL:-http://worker:8081}
+      WORKER_ADMIN_TOKEN: ${WORKER_ADMIN_TOKEN}
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_MODEL_FAST: ${OPENAI_MODEL_FAST:-}
+      OPENAI_MODEL_REASONING: ${OPENAI_MODEL_REASONING:-}
+      OPENAI_TIMEOUT_SEC: ${OPENAI_TIMEOUT_SEC:-30}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS}
+      GHL_CLIENT_ID: ${GHL_CLIENT_ID:-}
+      GHL_CLIENT_SECRET: ${GHL_CLIENT_SECRET:-}
+      GHL_REDIRECT_URI: ${GHL_REDIRECT_URI:-}
+      GHL_TOKEN_URL: ${GHL_TOKEN_URL:-}
+      GHL_AUTH_URL: ${GHL_AUTH_URL:-}
+      GHL_SCOPES: ${GHL_SCOPES:-}
+      GHL_TOKEN_TIMEOUT_SEC: ${GHL_TOKEN_TIMEOUT_SEC:-20}
+      TRIGGER_DAILY_CAP_PER_TENANT: ${TRIGGER_DAILY_CAP_PER_TENANT:-50}
+      DB_CONNECT_RETRIES: ${DB_CONNECT_RETRIES:-30}
+      DB_CONNECT_DELAY_SEC: ${DB_CONNECT_DELAY_SEC:-1}
+    ports:
+      - "127.0.0.1:${API_LOCAL_PORT:-8080}:8080"
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      WORKER_ADMIN_TOKEN: ${WORKER_ADMIN_TOKEN}
+      ALLOW_RUN_FOREVER: "false"
+      INGEST_ROOT: /app
+      MAX_TASK_SECONDS: ${MAX_TASK_SECONDS:-20}
+      DB_CONNECT_RETRIES: ${DB_CONNECT_RETRIES:-30}
+      DB_CONNECT_DELAY_SEC: ${DB_CONNECT_DELAY_SEC:-1}
+    ports:
+      - "127.0.0.1:${WORKER_LOCAL_PORT:-8081}:8081"
+    expose:
+      - "8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz')\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tufflove}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-tufflove}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tufflove} -d ${POSTGRES_DB:-tufflove}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  edge:
+  app:

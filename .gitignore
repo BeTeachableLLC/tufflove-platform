@@ -23,6 +23,7 @@
 .env.*
 !.env.example
 !.env.local.example
+!.env.production.example
 
 # Docker noise
 **/.dockerignore
@@ -35,6 +36,7 @@
 .env.*
 !.env.example
 !.env.local.example
+!.env.production.example
 
 # Keep local backups out of git
 legacy/

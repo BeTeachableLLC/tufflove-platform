@@ -1,6 +1,11 @@
 # TUFF LOVE ZeroClaw Platform (Starter)
 
 Primary runbook: `docs/runbook.md`
+AWS deployment prep (Sprint 10.5):
+- `docs/aws-deployment-architecture.md`
+- `docs/aws-deployment-runbook.md`
+- `docs/sprint11-supabase-exit-prereqs.md`
+- `docs/corent-assimilation-plan.md`
 
 One governed agent spine powering:
 - tufflove.us
