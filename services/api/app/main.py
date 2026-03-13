@@ -54,6 +54,7 @@ from app.brand_approval_service import (
     list_subaccounts,
     reject_content_item,
     request_content_revision,
+    schedule_content_item,
 )
 from app.trigger_service import (
     TRIGGER_TYPES,
@@ -111,6 +112,12 @@ class AdminApprovalRequest(BaseModel):
 
 class ContentReviewRequest(BaseModel):
     reviewer: str
+    note: str = ""
+
+
+class ContentScheduleRequest(BaseModel):
+    reviewer: str
+    scheduled_for: str
     note: str = ""
 
 
@@ -600,6 +607,31 @@ def familyops_request_revision(content_item_id: str, body: ContentReviewRequest)
         },
     )
     return {"ok": True, "item": revision["item"], "job": revision["job"], "regeneration_task": regen_task}
+
+
+@app.post("/v1/familyops/approvals/{content_item_id}/schedule", dependencies=[Depends(require_admin)])
+def familyops_schedule_content(content_item_id: str, body: ContentScheduleRequest):
+    _require_active_familyops_tenant()
+    _require_familyops_content_item(content_item_id)
+    reviewer = body.reviewer.strip()
+    if not reviewer:
+        raise HTTPException(status_code=400, detail="reviewer is required")
+
+    scheduled_for = parse_iso_datetime(body.scheduled_for, "scheduled_for")
+    if scheduled_for is None:
+        raise HTTPException(status_code=400, detail="scheduled_for is required")
+
+    try:
+        item = schedule_content_item(
+            content_item_id=content_item_id,
+            reviewer=reviewer,
+            scheduled_for=scheduled_for,
+            note=body.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"ok": True, "item": item}
 
 
 @app.post("/v1/trigger/register", dependencies=[Depends(require_admin)])
