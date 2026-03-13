@@ -44,6 +44,17 @@ from app.operator_service import (
     run_operator_version,
     update_operator_version,
 )
+from app.brand_approval_service import (
+    approve_content_item,
+    create_content_item_for_publish_task,
+    get_approval_item as get_content_approval_item,
+    init_brand_approval_tables,
+    list_approval_items,
+    list_brands_with_subaccounts,
+    list_subaccounts,
+    reject_content_item,
+    request_content_revision,
+)
 from app.trigger_service import (
     TRIGGER_TYPES,
     apply_trigger_patch,
@@ -95,6 +106,11 @@ class AdminPolicyUpdate(BaseModel):
 
 class AdminApprovalRequest(BaseModel):
     approved_by: str
+    note: str = ""
+
+
+class ContentReviewRequest(BaseModel):
+    reviewer: str
     note: str = ""
 
 
@@ -216,7 +232,7 @@ TOOLS = build_tool_registry()
 
 TASK_ALLOWLIST_BY_TENANT = {
     "tufflove": ["embed.ingest"],
-    "familyops": ["ghl.social.plan", "ghl.social.schedule", "ghl.social.publish", "embed.ingest"],
+    "familyops": ["ghl.social.plan", "ghl.social.schedule", "ghl.social.publish", "embed.ingest", "content.ai.regenerate"],
     "corent": [],
 }
 
@@ -250,6 +266,21 @@ def required_env(name: str) -> str:
     if not value:
         raise HTTPException(status_code=500, detail=f"{name} is not configured")
     return value
+
+
+def parse_iso_datetime(value: str | None, field_name: str) -> datetime | None:
+    if value is None:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}; expected ISO-8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def build_runtime_for_tenant(tenant_bundle: dict) -> ZeroClawRuntime:
@@ -357,6 +388,7 @@ def generate_ai_answer(
 def startup() -> None:
     init_db()
     seed_defaults()
+    init_brand_approval_tables()
     init_trigger_tables()
     init_operator_tables()
 
@@ -435,11 +467,29 @@ def enqueue_task_internal(*, tenant_id: str, user_id: str, task_type: str, paylo
     _validate_task_enqueue_request(tenant_id=tenant_id, task_type=task_type, payload=payload or {})
 
     task_id = str(uuid4())
+    normalized_payload = dict(payload or {})
+
+    if tenant_id == "familyops" and task_type == "ghl.social.publish":
+        content_item_id = str(normalized_payload.get("content_item_id") or "").strip()
+        if not content_item_id:
+            try:
+                content_item = create_content_item_for_publish_task(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    source_task_id=task_id,
+                    payload=normalized_payload,
+                )
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            normalized_payload["content_item_id"] = content_item["id"]
+
     task = AsyncTask(
         tenant_id=tenant_id,
         user_id=user_id,
         task_type=task_type,
-        payload=payload or {},
+        payload=normalized_payload,
         task_id=task_id,
     )
     upsert_task_log(
@@ -448,7 +498,7 @@ def enqueue_task_internal(*, tenant_id: str, user_id: str, task_type: str, paylo
         user_id=user_id,
         task_type=task_type,
         status="queued",
-        payload=payload or {},
+        payload=normalized_payload,
     )
     approval_required = tenant_id == "familyops" and task_type == "ghl.social.publish"
     if approval_required:
@@ -456,6 +506,100 @@ def enqueue_task_internal(*, tenant_id: str, user_id: str, task_type: str, paylo
 
     enqueue(task.model_dump(mode="json"))
     return {"ok": True, "task_id": task_id, "approval_required": approval_required}
+
+
+def _require_active_familyops_tenant() -> None:
+    tenant_bundle = get_tenant_policy_bundle("familyops")
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant_bundle["status"] != "active":
+        raise HTTPException(status_code=403, detail="Tenant is not active")
+
+
+def _require_familyops_content_item(content_item_id: str) -> dict:
+    item = get_content_approval_item(content_item_id)
+    if item is None or item.get("tenant_id") != "familyops":
+        raise HTTPException(status_code=404, detail="Approval item not found")
+    return item
+
+
+@app.get("/v1/familyops/approvals", dependencies=[Depends(require_admin)])
+def familyops_list_approvals(
+    subaccount_id: str | None = None,
+    brand_id: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    _require_active_familyops_tenant()
+    items = list_approval_items(
+        tenant_id="familyops",
+        subaccount_id=subaccount_id,
+        brand_id=brand_id,
+        platform=platform,
+        status=status,
+        date_from=parse_iso_datetime(date_from, "date_from"),
+        date_to=parse_iso_datetime(date_to, "date_to"),
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    items["subaccounts"] = list_subaccounts("familyops")
+    items["brands"] = list_brands_with_subaccounts("familyops")
+    return items
+
+
+@app.get("/v1/familyops/approvals/{content_item_id}", dependencies=[Depends(require_admin)])
+def familyops_get_approval(content_item_id: str):
+    _require_active_familyops_tenant()
+    return _require_familyops_content_item(content_item_id)
+
+
+@app.post("/v1/familyops/approvals/{content_item_id}/approve", dependencies=[Depends(require_admin)])
+def familyops_approve_content(content_item_id: str, body: ContentReviewRequest):
+    _require_active_familyops_tenant()
+    _require_familyops_content_item(content_item_id)
+    reviewer = body.reviewer.strip()
+    if not reviewer:
+        raise HTTPException(status_code=400, detail="reviewer is required")
+    item = approve_content_item(content_item_id=content_item_id, reviewer=reviewer, note=body.note)
+    return {"ok": True, "item": item}
+
+
+@app.post("/v1/familyops/approvals/{content_item_id}/reject", dependencies=[Depends(require_admin)])
+def familyops_reject_content(content_item_id: str, body: ContentReviewRequest):
+    _require_active_familyops_tenant()
+    _require_familyops_content_item(content_item_id)
+    reviewer = body.reviewer.strip()
+    if not reviewer:
+        raise HTTPException(status_code=400, detail="reviewer is required")
+    item = reject_content_item(content_item_id=content_item_id, reviewer=reviewer, note=body.note)
+    return {"ok": True, "item": item}
+
+
+@app.post("/v1/familyops/approvals/{content_item_id}/request-revision", dependencies=[Depends(require_admin)])
+def familyops_request_revision(content_item_id: str, body: ContentReviewRequest):
+    _require_active_familyops_tenant()
+    _require_familyops_content_item(content_item_id)
+    reviewer = body.reviewer.strip()
+    if not reviewer:
+        raise HTTPException(status_code=400, detail="reviewer is required")
+    revision = request_content_revision(content_item_id=content_item_id, reviewer=reviewer, note=body.note)
+    regen_task = enqueue_task_internal(
+        tenant_id="familyops",
+        user_id=reviewer,
+        task_type="content.ai.regenerate",
+        payload={
+            "content_item_id": content_item_id,
+            "regeneration_job_id": revision["job"]["id"],
+            "note": body.note,
+        },
+    )
+    return {"ok": True, "item": revision["item"], "job": revision["job"], "regeneration_task": regen_task}
 
 
 @app.post("/v1/trigger/register", dependencies=[Depends(require_admin)])

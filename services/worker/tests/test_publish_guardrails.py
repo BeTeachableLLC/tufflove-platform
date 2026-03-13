@@ -121,6 +121,46 @@ class PublishGuardrailHandlerTests(unittest.TestCase):
         self.assertEqual(result["location_id"], "loc-123")
         self.assertTrue(result["payload_to_send"]["dry_run"])
 
+    def test_publish_blocked_when_content_is_not_approved(self):
+        with (
+            patch("app.handlers.get_approval", return_value={"status": "approved"}),
+            patch(
+                "app.handlers.get_brand",
+                return_value={
+                    "id": "beteachable",
+                    "status": "active",
+                    "ghl_location_id": "loc-123",
+                    "timezone": "America/New_York",
+                    "default_platforms": ["fb"],
+                },
+            ),
+            patch(
+                "app.handlers.get_content_item_for_publish",
+                return_value={
+                    "id": "content-1",
+                    "tenant_id": "familyops",
+                    "subaccount_id": "sa-1",
+                    "brand_id": "beteachable",
+                    "status": "ready_for_review",
+                    "current_version_id": "version-1",
+                    "current_version_number": 1,
+                    "current_content_text": "Draft content",
+                    "brand_status": "active",
+                    "brand_location_id": "loc-123",
+                    "allowed_publishers": ["ghl.social.publish"],
+                    "subaccount_status": "active",
+                    "subaccount_location_id": "loc-123",
+                },
+            ),
+            patch("app.handlers.get_ghl_connection") as mock_connection,
+        ):
+            result = handlers.handle_ghl_social_publish(publish_payload(content_item_id="content-1"))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["note"], "content_not_approved")
+        mock_connection.assert_not_called()
+
 
 class PublishGuardrailRunnerTests(unittest.TestCase):
     def test_blocked_publish_is_requeued(self):
