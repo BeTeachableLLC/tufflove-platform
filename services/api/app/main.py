@@ -44,6 +44,13 @@ from app.operator_service import (
     run_operator_version,
     update_operator_version,
 )
+from app.model_router_service import (
+    create_model_router_decision,
+    get_model_router_decision,
+    init_model_router_tables,
+    list_model_router_decisions,
+    update_model_router_decision,
+)
 from app.brand_approval_service import (
     approve_content_item,
     create_content_item_for_publish_task,
@@ -206,6 +213,43 @@ class OperatorRunRequest(BaseModel):
     user_id: str
     operator_version_id: str
     input_payload: dict = Field(default_factory=dict)
+
+
+ModelTaskClass = Literal["implement", "debug", "review", "verify"]
+ProofStatus = Literal["unknown", "passing", "failing", "not_run"]
+VerificationStatus = Literal["not_required", "pending", "passed", "failed"]
+
+
+class ModelRouterRouteRequest(BaseModel):
+    tenant_id: str
+    task_class: ModelTaskClass
+    task_type: str | None = None
+    requested_model: str | None = None
+    escalation_reason: str = ""
+    output_summary: str = ""
+    proof_status: ProofStatus = "unknown"
+    mission_id: str | None = None
+    task_id: str | None = None
+    operator_id: str | None = None
+    linked_branch: str | None = None
+    linked_pr: str | None = None
+    sensitive_change: bool = False
+    verification_required: bool | None = None
+    verification_model: str | None = None
+    metadata: dict = Field(default_factory=dict)
+    created_by: str = "admin"
+
+
+class ModelRouterPatchRequest(BaseModel):
+    escalation_reason: str | None = None
+    output_summary: str | None = None
+    proof_status: ProofStatus | None = None
+    verification_required: bool | None = None
+    verification_model: str | None = None
+    verification_status: VerificationStatus | None = None
+    linked_branch: str | None = None
+    linked_pr: str | None = None
+    metadata: dict | None = None
 
 
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
@@ -395,6 +439,7 @@ def startup() -> None:
     init_brand_approval_tables()
     init_trigger_tables()
     init_operator_tables()
+    init_model_router_tables()
 
 
 @app.get("/healthz")
@@ -846,6 +891,73 @@ def get_operator_mission_endpoint(mission_id: str):
     if mission is None:
         raise HTTPException(status_code=404, detail="Mission not found")
     return mission
+
+
+@app.post("/v1/model-router/route", dependencies=[Depends(require_admin)])
+def model_router_route_endpoint(body: ModelRouterRouteRequest):
+    tenant_bundle = get_tenant_policy_bundle(body.tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant_bundle["status"] != "active":
+        raise HTTPException(status_code=403, detail="Tenant is not active")
+
+    decision = create_model_router_decision(
+        tenant_id=body.tenant_id,
+        task_class=body.task_class,
+        task_type=body.task_type,
+        requested_model=body.requested_model,
+        escalation_reason=body.escalation_reason,
+        output_summary=body.output_summary,
+        proof_status=body.proof_status,
+        mission_id=body.mission_id,
+        task_id=body.task_id,
+        operator_id=body.operator_id,
+        linked_branch=body.linked_branch,
+        linked_pr=body.linked_pr,
+        sensitive_change=body.sensitive_change,
+        verification_required=body.verification_required,
+        verification_model=body.verification_model,
+        metadata=body.metadata or {},
+        created_by=body.created_by.strip() or "admin",
+    )
+    return {"ok": True, "decision": decision}
+
+
+@app.get("/v1/model-router/decisions", dependencies=[Depends(require_admin)])
+def model_router_list_endpoint(
+    tenant_id: str = "familyops",
+    task_class: str | None = None,
+    verification_status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return list_model_router_decisions(
+        tenant_id=tenant_id,
+        task_class=task_class,
+        verification_status=verification_status,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/v1/model-router/decision/{decision_id}", dependencies=[Depends(require_admin)])
+def model_router_get_endpoint(decision_id: str):
+    decision = get_model_router_decision(decision_id)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="Model router decision not found")
+    return decision
+
+
+@app.patch("/v1/model-router/decision/{decision_id}", dependencies=[Depends(require_admin)])
+def model_router_patch_endpoint(decision_id: str, body: ModelRouterPatchRequest):
+    patch = body.model_dump(exclude_unset=True)
+    updated = update_model_router_decision(decision_id, patch)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Model router decision not found")
+    return {"ok": True, "decision": updated}
 
 
 @app.get("/v1/ghl/oauth/start")
