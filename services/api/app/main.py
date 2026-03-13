@@ -55,6 +55,10 @@ from app.brand_approval_service import (
     reject_content_item,
     request_content_revision,
 )
+from app.mission_history_service import (
+    get_familyops_mission,
+    list_familyops_missions,
+)
 from app.trigger_service import (
     TRIGGER_TYPES,
     apply_trigger_patch,
@@ -600,6 +604,49 @@ def familyops_request_revision(content_item_id: str, body: ContentReviewRequest)
         },
     )
     return {"ok": True, "item": revision["item"], "job": revision["job"], "regeneration_task": regen_task}
+
+
+@app.get("/v1/familyops/missions", dependencies=[Depends(require_admin)])
+def familyops_list_missions(
+    status: str | None = None,
+    task_type: str | None = None,
+    tenant_id: str | None = None,
+    subaccount_id: str | None = None,
+    brand_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    _require_active_familyops_tenant()
+    effective_tenant = str(tenant_id or "familyops").strip() or "familyops"
+    tenant_bundle = get_tenant_policy_bundle(effective_tenant)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    return list_familyops_missions(
+        tenant_id=effective_tenant,
+        status=status,
+        task_type=task_type,
+        subaccount_id=subaccount_id,
+        brand_id=brand_id,
+        date_from=parse_iso_datetime(date_from, "date_from"),
+        date_to=parse_iso_datetime(date_to, "date_to"),
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/v1/familyops/missions/{mission_id}", dependencies=[Depends(require_admin)])
+def familyops_get_mission_detail(mission_id: str, tenant_id: str = "familyops"):
+    _require_active_familyops_tenant()
+    effective_tenant = str(tenant_id or "familyops").strip() or "familyops"
+    mission = get_familyops_mission(mission_id, tenant_id=effective_tenant)
+    if mission is None:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    return mission
 
 
 @app.post("/v1/trigger/register", dependencies=[Depends(require_admin)])
