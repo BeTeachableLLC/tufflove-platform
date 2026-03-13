@@ -23,6 +23,7 @@ CONTENT_REVIEW_ACTIONS = {
     "rejected",
     "revision_requested",
     "ai_regenerated",
+    "scheduled",
 }
 REGEN_JOB_STATUSES = {"queued", "processing", "completed", "failed"}
 
@@ -409,6 +410,7 @@ def list_brands_with_subaccounts(tenant_id: str) -> list[dict[str, Any]]:
 
 
 def _serialize_content_item_row(row: dict[str, Any]) -> dict[str, Any]:
+    scheduled_at = _to_iso(row["scheduled_at"])
     return {
         "id": row["id"],
         "tenant_id": row["tenant_id"],
@@ -428,7 +430,8 @@ def _serialize_content_item_row(row: dict[str, Any]) -> dict[str, Any]:
         "current_version_number": int(row["current_version_number"] or 0) if row["current_version_number"] is not None else None,
         "current_content_text": row["current_content_text"] or "",
         "current_content_preview": (row["current_content_text"] or "")[:240],
-        "scheduled_at": _to_iso(row["scheduled_at"]),
+        "scheduled_at": scheduled_at,
+        "scheduled_for": scheduled_at,
         "last_review_action": row["last_review_action"],
         "last_reviewer": row["last_reviewer"],
         "last_reviewed_at": _to_iso(row["last_reviewed_at"]),
@@ -1118,3 +1121,57 @@ def request_content_revision(
     if item is None:
         raise RuntimeError("Failed to fetch revised content item")
     return {"item": item, "job": _serialize_regen_job(job_row)}
+
+
+def schedule_content_item(
+    *,
+    content_item_id: str,
+    reviewer: str,
+    scheduled_for: datetime,
+    note: str = "",
+) -> dict[str, Any]:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, status, current_version_id
+                FROM content_items
+                WHERE id = %s;
+                """,
+                (content_item_id,),
+            )
+            existing = cur.fetchone()
+            if existing is None:
+                conn.commit()
+                raise KeyError("Content item not found")
+            if str(existing["status"]) != "approved":
+                conn.commit()
+                raise ValueError("Only approved content can be scheduled")
+
+            cur.execute(
+                """
+                UPDATE content_items
+                SET
+                    status = 'scheduled',
+                    scheduled_at = %s,
+                    updated_at = now()
+                WHERE id = %s;
+                """,
+                (scheduled_for, content_item_id),
+            )
+        conn.commit()
+
+    note_text = note.strip() or f"Scheduled for {scheduled_for.astimezone(timezone.utc).isoformat()}"
+    _insert_content_review(
+        content_item_id=content_item_id,
+        content_version_id=existing["current_version_id"],
+        reviewer=reviewer,
+        action="scheduled",
+        note=note_text,
+        metadata_json={"scheduled_for": scheduled_for.astimezone(timezone.utc).isoformat()},
+    )
+
+    item = get_approval_item(content_item_id)
+    if item is None:
+        raise RuntimeError("Failed to fetch scheduled content item")
+    return item

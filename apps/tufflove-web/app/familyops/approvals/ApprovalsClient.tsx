@@ -37,6 +37,7 @@ type ApprovalItem = {
   current_content_text: string;
   current_content_preview: string;
   scheduled_at: string | null;
+  scheduled_for?: string | null;
   last_review_action: string | null;
   last_reviewer: string | null;
   last_reviewed_at: string | null;
@@ -119,6 +120,10 @@ function normalizeError(payload: unknown, fallback: string): string {
     if (typeof record.detail === "string" && record.detail.trim()) return record.detail;
   }
   return fallback;
+}
+
+function getScheduledFor(item: { scheduled_for?: string | null; scheduled_at?: string | null }): string | null {
+  return item.scheduled_for ?? item.scheduled_at ?? null;
 }
 
 export default function FamilyOpsApprovalsPage() {
@@ -241,12 +246,18 @@ export default function FamilyOpsApprovalsPage() {
     !!detail &&
     !actionLoading &&
     ["ready_for_review", "revision_requested", "approved", "rejected"].includes(detail.status);
+  const canSchedule = !!detail && !actionLoading && detail.status === "approved";
 
   const runReviewAction = useCallback(
-    async (action: "approve" | "reject" | "request-revision") => {
+    async (action: "approve" | "reject" | "request-revision" | "schedule") => {
       if (!detail?.id) return;
       const reviewer = window.prompt("Reviewer (required):", "moe");
       if (!reviewer || !reviewer.trim()) return;
+      const defaultScheduleFor = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const scheduledFor =
+        action === "schedule"
+          ? window.prompt("Schedule for (required ISO datetime):", defaultScheduleFor) ?? ""
+          : "";
       const note =
         window.prompt(
           action === "request-revision" ? "Revision note (required):" : "Note (optional):",
@@ -254,6 +265,10 @@ export default function FamilyOpsApprovalsPage() {
         ) ?? "";
       if (action === "request-revision" && !note.trim()) {
         setActionError("Revision note is required.");
+        return;
+      }
+      if (action === "schedule" && !scheduledFor.trim()) {
+        setActionError("Schedule time is required.");
         return;
       }
 
@@ -264,7 +279,11 @@ export default function FamilyOpsApprovalsPage() {
         const response = await fetch(`/api/familyops/approvals/${encodeURIComponent(detail.id)}/${action}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ reviewer: reviewer.trim(), note }),
+          body: JSON.stringify({
+            reviewer: reviewer.trim(),
+            note,
+            ...(action === "schedule" ? { scheduled_for: scheduledFor.trim() } : {}),
+          }),
         });
         const payload = await parseResponse(response);
         if (!response.ok) {
@@ -272,6 +291,8 @@ export default function FamilyOpsApprovalsPage() {
         }
         if (action === "request-revision") {
           setActionMessage("Revision requested and regeneration queued.");
+        } else if (action === "schedule") {
+          setActionMessage("Content scheduled.");
         } else {
           setActionMessage(`Content ${action}d.`);
         }
@@ -417,6 +438,7 @@ export default function FamilyOpsApprovalsPage() {
                   <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>Brand</th>
                   <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>Platform</th>
                   <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>Status</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>Scheduled For</th>
                   <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>Updated</th>
                 </tr>
               </thead>
@@ -439,13 +461,16 @@ export default function FamilyOpsApprovalsPage() {
                       <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{item.brand_name}</td>
                       <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{item.platform}</td>
                       <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{item.status}</td>
+                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>
+                        {formatDateTime(getScheduledFor(item))}
+                      </td>
                       <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{formatDateTime(item.updated_at)}</td>
                     </tr>
                   );
                 })}
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan={6} style={{ padding: 14, color: "#9ca3af" }}>
+                    <td colSpan={7} style={{ padding: 14, color: "#9ca3af" }}>
                       No approval items found.
                     </td>
                   </tr>
@@ -475,6 +500,9 @@ export default function FamilyOpsApprovalsPage() {
                 <strong>Status:</strong> {detail.status}
               </div>
               <div>
+                <strong>Scheduled For:</strong> {formatDateTime(getScheduledFor(detail))}
+              </div>
+              <div>
                 <strong>Current Version:</strong> {detail.current_version_number ?? "-"}
               </div>
               <div>
@@ -502,6 +530,9 @@ export default function FamilyOpsApprovalsPage() {
                   style={{ padding: "8px 12px" }}
                 >
                   {actionLoading ? "Working..." : "Request Revision"}
+                </button>
+                <button type="button" disabled={!canSchedule} onClick={() => void runReviewAction("schedule")} style={{ padding: "8px 12px" }}>
+                  {actionLoading ? "Working..." : "Schedule"}
                 </button>
               </div>
 

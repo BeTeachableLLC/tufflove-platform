@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 from app import main
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def read_repo_file(relative_path: str) -> str:
+    return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
 
 class BrandAwareApprovalsApiTests(unittest.TestCase):
@@ -96,6 +105,71 @@ class BrandAwareApprovalsApiTests(unittest.TestCase):
         self.assertEqual(kwargs["payload"]["content_item_id"], "content-1")
         self.assertEqual(kwargs["payload"]["regeneration_job_id"], "job-1")
 
+    def test_schedule_action_sets_scheduled_state(self):
+        with (
+            patch("app.main.get_tenant_policy_bundle", return_value={"id": "familyops", "status": "active"}),
+            patch("app.main.get_content_approval_item", return_value={"id": "content-1", "tenant_id": "familyops"}),
+            patch(
+                "app.main.schedule_content_item",
+                return_value={
+                    "id": "content-1",
+                    "tenant_id": "familyops",
+                    "status": "scheduled",
+                    "scheduled_for": "2026-03-15T09:00:00+00:00",
+                },
+            ) as mock_schedule,
+        ):
+            response = main.familyops_schedule_content(
+                "content-1",
+                main.ContentScheduleRequest(
+                    reviewer="moe",
+                    scheduled_for="2026-03-15T09:00:00Z",
+                    note="Queue this for Monday morning",
+                ),
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["item"]["status"], "scheduled")
+        self.assertEqual(response["item"]["scheduled_for"], "2026-03-15T09:00:00+00:00")
+        mock_schedule.assert_called_once()
+
+    def test_schedule_action_rejects_non_approved_content(self):
+        with (
+            patch("app.main.get_tenant_policy_bundle", return_value={"id": "familyops", "status": "active"}),
+            patch("app.main.get_content_approval_item", return_value={"id": "content-1", "tenant_id": "familyops"}),
+            patch("app.main.schedule_content_item", side_effect=ValueError("Only approved content can be scheduled")),
+        ):
+            with self.assertRaises(HTTPException) as context:
+                main.familyops_schedule_content(
+                    "content-1",
+                    main.ContentScheduleRequest(
+                        reviewer="moe",
+                        scheduled_for="2026-03-15T09:00:00Z",
+                        note="Attempt schedule",
+                    ),
+                )
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertEqual(context.exception.detail, "Only approved content can be scheduled")
+
+    def test_schedule_action_requires_scheduled_for(self):
+        with (
+            patch("app.main.get_tenant_policy_bundle", return_value={"id": "familyops", "status": "active"}),
+            patch("app.main.get_content_approval_item", return_value={"id": "content-1", "tenant_id": "familyops"}),
+        ):
+            with self.assertRaises(HTTPException) as context:
+                main.familyops_schedule_content(
+                    "content-1",
+                    main.ContentScheduleRequest(
+                        reviewer="moe",
+                        scheduled_for="",
+                        note="missing datetime",
+                    ),
+                )
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertEqual(context.exception.detail, "scheduled_for is required")
+
     def test_enqueue_publish_auto_creates_content_item_when_missing(self):
         with (
             patch("app.main._validate_task_enqueue_request"),
@@ -121,6 +195,19 @@ class BrandAwareApprovalsApiTests(unittest.TestCase):
         self.assertEqual(kwargs["payload"]["content_item_id"], "content-1")
         queued = mock_enqueue.call_args.args[0]
         self.assertEqual(queued["payload"]["content_item_id"], "content-1")
+
+
+class BrandAwareApprovalsUiTests(unittest.TestCase):
+    def test_schedule_proxy_route_targets_backend_schedule_endpoint(self):
+        route_source = read_repo_file("apps/tufflove-web/app/api/familyops/approvals/[id]/schedule/route.ts")
+        self.assertIn("requireFamilyOpsAdmin", route_source)
+        self.assertIn("/v1/familyops/approvals/${encodeURIComponent(id)}/schedule", route_source)
+
+    def test_approvals_client_exposes_schedule_action(self):
+        source = read_repo_file("apps/tufflove-web/app/familyops/approvals/ApprovalsClient.tsx")
+        self.assertIn('runReviewAction("schedule")', source)
+        self.assertIn("scheduled_for", source)
+        self.assertIn("Schedule", source)
 
 
 if __name__ == "__main__":
