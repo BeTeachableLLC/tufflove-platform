@@ -1,0 +1,18 @@
+[Unit]
+Description=TUFF LOVE Platform Compose Stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/tufflove-platform
+Environment=COMPOSE_FILE=/opt/tufflove-platform/docker-compose.production.yml
+Environment=ENV_FILE=/opt/tufflove-platform/.env.production
+ExecStart=/opt/tufflove-platform/scripts/prod-stack.sh start
+ExecStop=/opt/tufflove-platform/scripts/prod-stack.sh stop
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
