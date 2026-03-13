@@ -1,11 +1,11 @@
 import "server-only";
 
-import type { User } from "@supabase/supabase-js";
-import { createClient } from "@/utils/supabase/server";
+import type { AppSessionUser } from "@/utils/appAuth";
+import { getFamilyOpsSession, isFamilyOpsAdminEmail } from "@/utils/appAuth";
 
 type FamilyOpsAdminOk = {
   ok: true;
-  user: User;
+  user: AppSessionUser;
 };
 
 type FamilyOpsAdminErr = {
@@ -16,29 +16,14 @@ type FamilyOpsAdminErr = {
 
 export type FamilyOpsAdminResult = FamilyOpsAdminOk | FamilyOpsAdminErr;
 
-function parseAdminAllowlist(): Set<string> {
-  const raw = process.env.FAMILYOPS_ADMIN_EMAILS || "";
-  return new Set(
-    raw
-      .split(",")
-      .map((email) => email.trim().toLowerCase())
-      .filter(Boolean),
-  );
-}
-
 export async function requireFamilyOpsAdmin(): Promise<FamilyOpsAdminResult> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const user = await getFamilyOpsSession();
 
   if (!user) {
     return { ok: false, status: 401, reason: "not_signed_in" };
   }
 
-  const email = user.email?.trim().toLowerCase();
-  const allowlist = parseAdminAllowlist();
-  if (!email || !allowlist.has(email)) {
+  if (!isFamilyOpsAdminEmail(user.email)) {
     return { ok: false, status: 403, reason: "not_authorized" };
   }
 

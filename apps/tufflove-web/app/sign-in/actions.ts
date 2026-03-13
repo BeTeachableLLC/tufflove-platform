@@ -1,6 +1,13 @@
 'use server'
 
 import { redirect } from 'next/navigation'
+import {
+  createFamilyOpsSession,
+  isAppSessionSigningConfigured,
+  isFamilyOpsAdminEmail,
+  isSupabaseAuthConfigured,
+  verifyFamilyOpsAdminPassword,
+} from '@/utils/appAuth'
 import { createClient } from '@/utils/supabase/server'
 
 function getSiteUrl() {
@@ -25,6 +32,18 @@ export async function signInWithPassword(formData: FormData) {
     redirect('/sign-in?error=Email%20and%20password%20are%20required')
   }
 
+  if (isFamilyOpsAdminEmail(email) && verifyFamilyOpsAdminPassword(password)) {
+    if (!isAppSessionSigningConfigured()) {
+      redirect('/sign-in?error=APP_AUTH_SECRET%20or%20AGENT_ADMIN_TOKEN%20must%20be%20set')
+    }
+    await createFamilyOpsSession(email)
+    redirect('/familyops/approvals')
+  }
+
+  if (!isSupabaseAuthConfigured()) {
+    redirect('/sign-in?error=Invalid%20credentials%20or%20Supabase%20auth%20is%20disabled')
+  }
+
   const supabase = await createClient()
   const { error } = await supabase.auth.signInWithPassword({
     email,
@@ -45,6 +64,10 @@ export async function signUpWithPassword(formData: FormData) {
 
   if (!email || !password) {
     redirect('/sign-in?error=Email%20and%20password%20are%20required')
+  }
+
+  if (!isSupabaseAuthConfigured()) {
+    redirect('/sign-in?error=Self-service%20sign-up%20is%20disabled%20in%20this%20environment')
   }
 
   const supabase = await createClient()

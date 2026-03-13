@@ -1,14 +1,18 @@
 import { NextResponse } from 'next/server'
+import { isSupabaseAuthConfigured } from '@/utils/appAuth'
 import { createClient } from '@/utils/supabase/server'
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
-  const provider = searchParams.get('provider')
   // If there is a "next" parameter, redirect there (e.g., /dashboard)
   const next = searchParams.get('next') ?? '/'
 
   if (code) {
+    if (!isSupabaseAuthConfigured()) {
+      return NextResponse.redirect(`${origin}/sign-in?error=Supabase%20OAuth%20is%20disabled`)
+    }
+
     const supabase = await createClient()
     const { error } = await supabase.auth.exchangeCodeForSession(code)
     

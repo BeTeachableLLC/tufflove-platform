@@ -1,5 +1,6 @@
 "use server";
 import { randomUUID } from "crypto";
+import { clearFamilyOpsSession, isSupabaseAuthConfigured } from "@/utils/appAuth";
 import { createClient } from "@/utils/supabase/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -2562,8 +2563,11 @@ export async function deleteMemberAction(memberId: string) {
   revalidatePath("/dashboard/the-unit");
 }
 export async function deleteMyAccountAction() {
-    const supabase = await createClient();
-    await supabase.auth.signOut();
+    await clearFamilyOpsSession();
+    if (isSupabaseAuthConfigured()) {
+      const supabase = await createClient();
+      await supabase.auth.signOut();
+    }
     redirect("/");
 }
 export async function createTeamAction() {}

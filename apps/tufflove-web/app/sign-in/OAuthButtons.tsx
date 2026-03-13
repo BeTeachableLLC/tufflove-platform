@@ -11,11 +11,19 @@ const providers = [
 
 type ProviderId = (typeof providers)[number]["id"];
 
+const isSupabaseOAuthEnabled = Boolean(
+  process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+);
+
 export default function OAuthButtons() {
   const [loadingProvider, setLoadingProvider] = useState<ProviderId | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleOAuth = async (provider: ProviderId) => {
+    if (!isSupabaseOAuthEnabled) {
+      setError("OAuth sign-in is disabled in this environment.");
+      return;
+    }
     setError(null);
     setLoadingProvider(provider);
     const supabase = createClient();
@@ -44,6 +52,11 @@ export default function OAuthButtons() {
   return (
     <div style={{ marginTop: "28px" }}>
       <p style={{ marginBottom: "12px" }}>Paid accounts can also use:</p>
+      {!isSupabaseOAuthEnabled ? (
+        <p style={{ color: "#666", marginBottom: "10px" }}>
+          OAuth is unavailable because Supabase auth is not configured.
+        </p>
+      ) : null}
       <div
         style={{
           display: "flex",
@@ -57,7 +70,7 @@ export default function OAuthButtons() {
             key={provider.id}
             type="button"
             onClick={() => handleOAuth(provider.id)}
-            disabled={Boolean(loadingProvider)}
+            disabled={Boolean(loadingProvider) || !isSupabaseOAuthEnabled}
             style={{
               padding: "10px 20px",
               fontSize: "14px",

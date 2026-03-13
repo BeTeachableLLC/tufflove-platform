@@ -24,6 +24,18 @@ Useful local routes:
 - `http://localhost:3000/agent`
 - `http://localhost:3000/agent-test`
 
+### 3) App auth session env (FamilyOps surfaces)
+Set these in `apps/tufflove-web/.env.local`:
+```bash
+APP_AUTH_SECRET=change_me_app_auth_secret
+FAMILYOPS_ADMIN_EMAILS=you@example.com
+FAMILYOPS_ADMIN_PASSWORD=change_me_familyops
+APP_AUTH_SESSION_TTL_SECONDS=43200
+```
+Notes:
+- FamilyOps `/familyops/*`, `/agent`, `/agent-test`, and worker run-once web route now use signed app-session cookies.
+- Supabase auth remains optional fallback for legacy dashboard sign-in paths when `NEXT_PUBLIC_SUPABASE_*` vars are configured.
+
 ## Validation Commands
 Use these before opening/merging a PR.
 
