@@ -33,6 +33,16 @@ from app.db import (
 )
 from app.queue import enqueue
 from app.tasks import AsyncTask
+from app.trigger_service import (
+    TRIGGER_TYPES,
+    apply_trigger_patch,
+    create_trigger,
+    fire_trigger_by_id,
+    get_trigger,
+    init_trigger_tables,
+    list_triggers as list_trigger_configs,
+    run_due_triggers,
+)
 
 load_dotenv()
 app = FastAPI(title="TUFF LOVE Agent API", version="0.1.0")
@@ -96,6 +106,38 @@ class AdminBrandUpdateRequest(BaseModel):
     status: Literal["active", "inactive"] = "active"
 
 
+TriggerType = Literal["interval", "cron", "daily", "weekly", "webhook"]
+
+
+class TriggerRegisterRequest(BaseModel):
+    tenant_id: str
+    operator_id: str
+    task_type: str
+    task_payload: dict = Field(default_factory=dict)
+    trigger_type: TriggerType
+    config_json: dict = Field(default_factory=dict)
+    enabled: bool = True
+    dedupe_key: str | None = None
+    dedupe_window_seconds: int = Field(default=300, ge=1, le=86400)
+
+
+class TriggerFireRequest(BaseModel):
+    trigger_id: str | None = None
+    run_due: bool = False
+    limit: int = Field(default=25, ge=1, le=200)
+
+
+class TriggerPatchRequest(BaseModel):
+    operator_id: str | None = None
+    task_type: str | None = None
+    task_payload: dict | None = None
+    trigger_type: TriggerType | None = None
+    config_json: dict | None = None
+    enabled: bool | None = None
+    dedupe_key: str | None = None
+    dedupe_window_seconds: int | None = Field(default=None, ge=1, le=86400)
+
+
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
 def tool_db_write(payload): return {"ok": True, "data": "db.write stub", "payload": payload}
 def tool_ghl_read(payload): return {"ok": True, "data": "ghl.read stub", "payload": payload}
@@ -127,6 +169,15 @@ DEFAULT_GHL_SCOPES = (
     "calendars.readonly calendars.write "
     "socialplanner/post.readonly socialplanner/post.write"
 )
+
+
+def trigger_daily_cap() -> int:
+    raw = os.getenv("TRIGGER_DAILY_CAP_PER_TENANT", "50").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 50
+    return max(value, 1)
 
 
 def require_admin(request: Request) -> None:
@@ -248,6 +299,7 @@ def generate_ai_answer(
 def startup() -> None:
     init_db()
     seed_defaults()
+    init_trigger_tables()
 
 
 @app.get("/healthz")
@@ -287,49 +339,156 @@ def chat(req: ChatRequest):
 
 @app.post("/v1/task/enqueue", dependencies=[Depends(require_admin)])
 def enqueue_task(req: TaskEnqueueRequest):
-    if not req.tenant_id or not req.user_id or not req.task_type:
+    return enqueue_task_internal(
+        tenant_id=req.tenant_id,
+        user_id=req.user_id,
+        task_type=req.task_type,
+        payload=req.payload or {},
+    )
+
+
+def _validate_task_enqueue_request(*, tenant_id: str, task_type: str, payload: dict) -> None:
+    if not tenant_id or not task_type:
         raise HTTPException(status_code=400, detail="Missing required fields")
 
-    tenant_bundle = get_tenant_policy_bundle(req.tenant_id)
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
     if tenant_bundle is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
     if tenant_bundle["status"] != "active":
         raise HTTPException(status_code=403, detail="Tenant is not active")
 
-    allowed_task_types = TASK_ALLOWLIST_BY_TENANT.get(req.tenant_id, [])
-    if req.task_type not in allowed_task_types:
+    allowed_task_types = TASK_ALLOWLIST_BY_TENANT.get(tenant_id, [])
+    if task_type not in allowed_task_types:
         raise HTTPException(status_code=403, detail="Task type is not allowed for tenant")
-    if req.task_type == "ghl.social.publish":
-        brand_id = str((req.payload or {}).get("brand_id", "")).strip()
-        location_id = str((req.payload or {}).get("location_id", "")).strip()
+    if task_type == "ghl.social.publish":
+        brand_id = str((payload or {}).get("brand_id", "")).strip()
+        location_id = str((payload or {}).get("location_id", "")).strip()
         if not brand_id or not location_id:
             raise HTTPException(
                 status_code=400,
                 detail="ghl.social.publish payload must include brand_id and location_id",
             )
 
+
+def enqueue_task_internal(*, tenant_id: str, user_id: str, task_type: str, payload: dict) -> dict:
+    if not tenant_id or not user_id or not task_type:
+        raise HTTPException(status_code=400, detail="Missing required fields")
+    _validate_task_enqueue_request(tenant_id=tenant_id, task_type=task_type, payload=payload or {})
+
     task_id = str(uuid4())
     task = AsyncTask(
-        tenant_id=req.tenant_id,
-        user_id=req.user_id,
-        task_type=req.task_type,
-        payload=req.payload or {},
+        tenant_id=tenant_id,
+        user_id=user_id,
+        task_type=task_type,
+        payload=payload or {},
         task_id=task_id,
     )
     upsert_task_log(
         task_id=task_id,
-        tenant_id=req.tenant_id,
-        user_id=req.user_id,
-        task_type=req.task_type,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        task_type=task_type,
         status="queued",
-        payload=req.payload or {},
+        payload=payload or {},
     )
-    approval_required = req.tenant_id == "familyops" and req.task_type == "ghl.social.publish"
+    approval_required = tenant_id == "familyops" and task_type == "ghl.social.publish"
     if approval_required:
-        create_approval(task_id, req.tenant_id)
+        create_approval(task_id, tenant_id)
 
     enqueue(task.model_dump(mode="json"))
     return {"ok": True, "task_id": task_id, "approval_required": approval_required}
+
+
+@app.post("/v1/trigger/register", dependencies=[Depends(require_admin)])
+def register_trigger(req: TriggerRegisterRequest):
+    _validate_task_enqueue_request(
+        tenant_id=req.tenant_id,
+        task_type=req.task_type,
+        payload=req.task_payload or {},
+    )
+    if req.trigger_type not in TRIGGER_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported trigger_type")
+
+    trigger = create_trigger(
+        tenant_id=req.tenant_id,
+        operator_id=req.operator_id.strip() or "trigger-service",
+        task_type=req.task_type,
+        task_payload=req.task_payload or {},
+        trigger_type=req.trigger_type,
+        config_json=req.config_json or {},
+        enabled=bool(req.enabled),
+        dedupe_key=req.dedupe_key,
+        dedupe_window_seconds=req.dedupe_window_seconds,
+    )
+    return {"ok": True, "trigger": trigger}
+
+
+@app.post("/v1/trigger/fire", dependencies=[Depends(require_admin)])
+def fire_trigger(req: TriggerFireRequest):
+    if req.run_due:
+        return run_due_triggers(
+            limit=req.limit,
+            daily_cap=trigger_daily_cap(),
+            enqueue_task_fn=enqueue_task_internal,
+        )
+
+    trigger_id = (req.trigger_id or "").strip()
+    if not trigger_id:
+        raise HTTPException(status_code=400, detail="trigger_id is required unless run_due is true")
+    outcome = fire_trigger_by_id(
+        trigger_id,
+        daily_cap=trigger_daily_cap(),
+        enqueue_task_fn=enqueue_task_internal,
+        source="api_fire",
+    )
+    if outcome.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    return outcome
+
+
+@app.get("/v1/triggers", dependencies=[Depends(require_admin)])
+def list_triggers_endpoint(tenant_id: str):
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id is required")
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"tenant_id": tenant_id, "triggers": list_trigger_configs(tenant_id)}
+
+
+@app.patch("/v1/trigger/{trigger_id}", dependencies=[Depends(require_admin)])
+def patch_trigger_endpoint(trigger_id: str, body: TriggerPatchRequest):
+    existing = get_trigger(trigger_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+
+    patch = body.model_dump(exclude_unset=True)
+    if not patch:
+        return {"ok": True, "trigger": existing}
+
+    effective_task_type = str(patch.get("task_type") or existing["task_type"])
+    effective_payload = (
+        patch.get("task_payload")
+        if "task_payload" in patch
+        else (existing.get("task_payload") or {})
+    )
+    _validate_task_enqueue_request(
+        tenant_id=str(existing["tenant_id"]),
+        task_type=effective_task_type,
+        payload=effective_payload or {},
+    )
+
+    if "trigger_type" in patch and patch["trigger_type"] not in TRIGGER_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported trigger_type")
+
+    try:
+        updated = apply_trigger_patch(trigger_id, patch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    return {"ok": True, "trigger": updated}
 
 
 @app.get("/v1/ghl/oauth/start")
