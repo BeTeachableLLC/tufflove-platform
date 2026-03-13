@@ -16,6 +16,9 @@ type ReviewState =
   | "rejected";
 type VerificationStatus = "not_required" | "pending" | "passed" | "failed";
 type ProofStatus = "unknown" | "passing" | "failing" | "not_run";
+type BuildProofStatus = "unknown" | "passed" | "failed";
+type BuildVerificationState = "not_required" | "pending" | "passed" | "failed";
+type ExecutionRunStatus = "running" | "passed" | "failed" | "error" | "cancelled";
 type ActionType =
   | "approve_next_step"
   | "reject_send_back"
@@ -86,6 +89,25 @@ type BuildBranchRecord = {
   created_at: string | null;
 };
 
+type BuildExecutionRun = {
+  id: string;
+  router_decision_id: string | null;
+  mission_id: string | null;
+  command_class: string;
+  target_scope: string;
+  status: ExecutionRunStatus | string;
+  summary: string;
+  lint_build_summary: string;
+  test_summary: string;
+  changed_files_summary: string;
+  execution_output_excerpt: string;
+  proof_status: BuildProofStatus | string;
+  failure_note: string;
+  rollback_note: string;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
 type BuildRequest = {
   id: string;
   goal: string;
@@ -103,6 +125,12 @@ type BuildRequest = {
   proof_summary: string;
   test_summary: string;
   files_changed_summary: string;
+  proof_status: BuildProofStatus | string;
+  verification_state: BuildVerificationState | string;
+  recommendation: string;
+  latest_execution_run_id: string | null;
+  failure_note: string;
+  rollback_note: string;
   created_at: string | null;
   updated_at: string | null;
   branches?: BuildBranchRecord[];
@@ -112,6 +140,7 @@ type BuildRequestDetail = BuildRequest & {
   timeline?: TimelineEvent[];
   linked_router_decision?: RouterDecision | null;
   linked_mission?: MissionDetail | null;
+  execution_runs?: BuildExecutionRun[];
 };
 
 type BuildListResponse = {
@@ -152,7 +181,9 @@ const BUILD_STAGE_OPTIONS = [
   "verification_requested",
   "pr_drafted",
   "approval_pending",
+  "ready_for_pr_review",
   "ready_for_merge",
+  "revise_before_pr",
   "rejected",
   "rerun_requested",
 ] as const;
@@ -276,6 +307,21 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
   const [buildPrProofSummary, setBuildPrProofSummary] = useState("");
   const [buildPrTestSummary, setBuildPrTestSummary] = useState("");
   const [buildPrFilesSummary, setBuildPrFilesSummary] = useState("");
+  const [executionCommandClass, setExecutionCommandClass] = useState("codex");
+  const [executionTargetScope, setExecutionTargetScope] = useState("repo");
+  const [executionSummary, setExecutionSummary] = useState("");
+  const [executionStatus, setExecutionStatus] = useState<ExecutionRunStatus>("passed");
+  const [executionProofStatus, setExecutionProofStatus] = useState<BuildProofStatus>("passed");
+  const [executionLintSummary, setExecutionLintSummary] = useState("");
+  const [executionTestSummary, setExecutionTestSummary] = useState("");
+  const [executionFilesSummary, setExecutionFilesSummary] = useState("");
+  const [executionOutputExcerpt, setExecutionOutputExcerpt] = useState("");
+  const [executionFailureNote, setExecutionFailureNote] = useState("");
+  const [executionRollbackNote, setExecutionRollbackNote] = useState("");
+  const [executionRequestVerification, setExecutionRequestVerification] = useState(false);
+  const [selectedExecutionRunId, setSelectedExecutionRunId] = useState("");
+  const [verificationState, setVerificationState] = useState<BuildVerificationState>("pending");
+  const [verificationDetail, setVerificationDetail] = useState("");
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -348,6 +394,14 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       setBuildPrProofSummary(data.proof_summary || "");
       setBuildPrTestSummary(data.test_summary || "");
       setBuildPrFilesSummary(data.files_changed_summary || "");
+      setExecutionLintSummary(data.proof_summary || "");
+      setExecutionTestSummary(data.test_summary || "");
+      setExecutionFilesSummary(data.files_changed_summary || "");
+      setExecutionFailureNote(data.failure_note || "");
+      setExecutionRollbackNote(data.rollback_note || "");
+      const latestRunId = data.latest_execution_run_id || data.execution_runs?.[0]?.id || "";
+      setSelectedExecutionRunId(latestRunId);
+      setVerificationState((data.verification_state as BuildVerificationState) || "pending");
     } catch (loadError) {
       setBuildDetail(null);
       setSelectedBuildId(id);
@@ -628,13 +682,134 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
     }
   }
 
+  async function startExecutionRun() {
+    if (!buildDetail) return;
+    setBuildStageUpdating("implementation_started");
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/familyops/build-intake/${encodeURIComponent(buildDetail.id)}/execution/start`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actor: createdBy,
+          command_class: executionCommandClass.trim() || "codex",
+          target_scope: executionTargetScope.trim() || "repo",
+          summary: executionSummary.trim(),
+          router_decision_id: buildDetail.router_decision_id || null,
+          mission_id: buildDetail.mission_id || null,
+        }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to start execution run (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      await loadBuildList();
+      await loadBuildDetail(buildDetail.id);
+      const request =
+        payload && typeof payload === "object" ? ((payload as { request?: BuildRequestDetail }).request ?? null) : null;
+      const runId = request?.latest_execution_run_id || "";
+      if (runId) {
+        setSelectedExecutionRunId(runId);
+      }
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBuildStageUpdating(null);
+    }
+  }
+
+  async function completeExecutionRun() {
+    if (!buildDetail || !selectedExecutionRunId.trim()) return;
+    setBuildStageUpdating("tests_run");
+    setActionError(null);
+    try {
+      const response = await fetch(
+        `/api/familyops/build-intake/${encodeURIComponent(buildDetail.id)}/execution/${encodeURIComponent(selectedExecutionRunId.trim())}/complete`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            actor: createdBy,
+            status: executionStatus,
+            summary: executionSummary.trim(),
+            lint_build_summary: executionLintSummary.trim(),
+            test_summary: executionTestSummary.trim(),
+            changed_files_summary: executionFilesSummary.trim(),
+            execution_output_excerpt: executionOutputExcerpt.trim(),
+            proof_status: executionProofStatus,
+            request_verification: executionRequestVerification,
+            failure_note: executionFailureNote.trim(),
+            rollback_note: executionRollbackNote.trim(),
+          }),
+        },
+      );
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to complete execution run (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      setExecutionRequestVerification(false);
+      await loadBuildList();
+      await loadBuildDetail(buildDetail.id);
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBuildStageUpdating(null);
+    }
+  }
+
+  async function updateBuildVerification(nextState: BuildVerificationState) {
+    if (!buildDetail) return;
+    setBuildStageUpdating("verification_requested");
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/familyops/build-intake/${encodeURIComponent(buildDetail.id)}/verification`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actor: createdBy,
+          verification_state: nextState,
+          detail: verificationDetail.trim(),
+        }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to update verification (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      setVerificationState(nextState);
+      setVerificationDetail("");
+      await loadBuildList();
+      await loadBuildDetail(buildDetail.id);
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBuildStageUpdating(null);
+    }
+  }
+
   const activeQueue = useMemo(
     () => items.filter((item) => ACTIVE_STATES.has(item.review_state)),
     [items],
   );
   const recentQueue = useMemo(() => items.slice(0, 30), [items]);
   const buildActiveQueue = useMemo(
-    () => buildItems.filter((item) => ["intake", "routed", "branch_created", "implementation_started", "tests_run", "verification_requested", "pr_drafted", "approval_pending"].includes(item.stage)),
+    () =>
+      buildItems.filter((item) =>
+        [
+          "intake",
+          "routed",
+          "branch_created",
+          "implementation_started",
+          "tests_run",
+          "verification_requested",
+          "pr_drafted",
+          "approval_pending",
+          "ready_for_pr_review",
+          "revise_before_pr",
+        ].includes(item.stage),
+      ),
     [buildItems],
   );
   const buildRecentQueue = useMemo(() => buildItems.slice(0, 30), [buildItems]);
@@ -851,6 +1026,9 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
                 <div className={styles.itemMeta}>
                   lane {item.requested_model_lane || "-"} · branch {item.branch_name || "-"} · pr {item.pr_number || item.pr_url || "-"}
                 </div>
+                <div className={styles.itemMeta}>
+                  proof {item.proof_status || "-"} · verification {item.verification_state || "-"} · recommendation {item.recommendation || "-"}
+                </div>
                 <div className={styles.itemMeta}>{item.scope_summary || "-"}</div>
               </button>
             ))}
@@ -869,6 +1047,7 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
                 </div>
                 <div className={styles.itemMeta}>{item.goal || "-"}</div>
                 <div className={styles.itemMeta}>router decision: {item.router_decision_id || "-"}</div>
+                <div className={styles.itemMeta}>recommendation: {item.recommendation || "-"}</div>
               </button>
             ))}
           </div>
@@ -922,6 +1101,10 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
             <div className={styles.detailGrid}>
               <div><strong>ID:</strong> {buildDetail.id}</div>
               <div><strong>Stage:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.stage)}`}>{buildDetail.stage}</span></div>
+              <div><strong>Recommendation:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.recommendation || "unknown")}`}>{buildDetail.recommendation || "-"}</span></div>
+              <div><strong>Proof Status:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.proof_status || "unknown")}`}>{buildDetail.proof_status || "-"}</span></div>
+              <div><strong>Verification:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.verification_state || "unknown")}`}>{buildDetail.verification_state || "-"}</span></div>
+              <div><strong>Latest Execution Run:</strong> {buildDetail.latest_execution_run_id || "-"}</div>
               <div><strong>Goal:</strong> {buildDetail.goal || "-"}</div>
               <div><strong>Lane:</strong> {buildDetail.requested_model_lane || "-"}</div>
               <div><strong>Branch:</strong> {buildDetail.branch_name || "-"}</div>
@@ -933,6 +1116,8 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
               <div><strong>Files Summary:</strong> {buildDetail.files_changed_summary || "-"}</div>
               <div><strong>Test Summary:</strong> {buildDetail.test_summary || "-"}</div>
               <div><strong>Proof Summary:</strong> {buildDetail.proof_summary || "-"}</div>
+              <div><strong>Failure Note:</strong> {buildDetail.failure_note || "-"}</div>
+              <div><strong>Rollback Note:</strong> {buildDetail.rollback_note || "-"}</div>
             </div>
 
             <div className={styles.linkRow}>
@@ -978,8 +1163,14 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
                 <button type="button" onClick={() => void updateBuildStage("approval_pending")} disabled={Boolean(buildStageUpdating)}>
                   Mark Approval Pending
                 </button>
+                <button type="button" onClick={() => void updateBuildStage("ready_for_pr_review")} disabled={Boolean(buildStageUpdating)}>
+                  Mark Ready for PR Review
+                </button>
                 <button type="button" onClick={() => void updateBuildStage("ready_for_merge")} disabled={Boolean(buildStageUpdating)}>
                   Mark Ready for Merge
+                </button>
+                <button type="button" onClick={() => void updateBuildStage("revise_before_pr")} disabled={Boolean(buildStageUpdating)}>
+                  Mark Revise Before PR
                 </button>
                 <button type="button" onClick={() => void updateBuildStage("rejected")} disabled={Boolean(buildStageUpdating)}>
                   Mark Rejected
@@ -989,6 +1180,118 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
                 </button>
               </div>
               {buildStageUpdating ? <div className={styles.muted}>Updating {buildStageUpdating}...</div> : null}
+            </div>
+
+            <div className={styles.actionBlock}>
+              <h3>Execution Runner + Proof Ingestion</h3>
+              <label>
+                Command Class
+                <input value={executionCommandClass} onChange={(event) => setExecutionCommandClass(event.target.value)} placeholder="codex" />
+              </label>
+              <label>
+                Target Scope
+                <input value={executionTargetScope} onChange={(event) => setExecutionTargetScope(event.target.value)} placeholder="services/api + apps/tufflove-web" />
+              </label>
+              <label>
+                Execution Summary
+                <textarea rows={2} value={executionSummary} onChange={(event) => setExecutionSummary(event.target.value)} />
+              </label>
+              <button type="button" onClick={() => void startExecutionRun()} disabled={Boolean(buildStageUpdating)}>
+                Start Execution Run
+              </button>
+
+              <label>
+                Run to Complete
+                <select value={selectedExecutionRunId} onChange={(event) => setSelectedExecutionRunId(event.target.value)}>
+                  <option value="">select run</option>
+                  {(buildDetail.execution_runs || []).map((run) => (
+                    <option key={run.id} value={run.id}>
+                      {run.id} · {run.status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Execution Status
+                <select value={executionStatus} onChange={(event) => setExecutionStatus(event.target.value as ExecutionRunStatus)}>
+                  <option value="passed">passed</option>
+                  <option value="failed">failed</option>
+                  <option value="error">error</option>
+                  <option value="cancelled">cancelled</option>
+                  <option value="running">running</option>
+                </select>
+              </label>
+              <label>
+                Proof Status
+                <select value={executionProofStatus} onChange={(event) => setExecutionProofStatus(event.target.value as BuildProofStatus)}>
+                  <option value="unknown">unknown</option>
+                  <option value="passed">passed</option>
+                  <option value="failed">failed</option>
+                </select>
+              </label>
+              <label>
+                Lint/Build Summary
+                <textarea rows={2} value={executionLintSummary} onChange={(event) => setExecutionLintSummary(event.target.value)} />
+              </label>
+              <label>
+                Test Summary
+                <textarea rows={2} value={executionTestSummary} onChange={(event) => setExecutionTestSummary(event.target.value)} />
+              </label>
+              <label>
+                Changed Files Summary
+                <textarea rows={2} value={executionFilesSummary} onChange={(event) => setExecutionFilesSummary(event.target.value)} />
+              </label>
+              <label>
+                Execution Output Excerpt (redacted)
+                <textarea rows={4} value={executionOutputExcerpt} onChange={(event) => setExecutionOutputExcerpt(event.target.value)} />
+              </label>
+              <label>
+                Failure Note
+                <textarea rows={2} value={executionFailureNote} onChange={(event) => setExecutionFailureNote(event.target.value)} />
+              </label>
+              <label>
+                Rollback Note
+                <textarea rows={2} value={executionRollbackNote} onChange={(event) => setExecutionRollbackNote(event.target.value)} />
+              </label>
+              <label className={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={executionRequestVerification}
+                  onChange={(event) => setExecutionRequestVerification(event.target.checked)}
+                />
+                Request second-model verification after proof ingestion
+              </label>
+              <button type="button" onClick={() => void completeExecutionRun()} disabled={Boolean(buildStageUpdating) || !selectedExecutionRunId.trim()}>
+                Complete Execution + Ingest Proof
+              </button>
+            </div>
+
+            <div className={styles.actionBlock}>
+              <h3>Verification Hook</h3>
+              <label>
+                Verification State
+                <select value={verificationState} onChange={(event) => setVerificationState(event.target.value as BuildVerificationState)}>
+                  <option value="pending">pending</option>
+                  <option value="passed">passed</option>
+                  <option value="failed">failed</option>
+                  <option value="not_required">not_required</option>
+                </select>
+              </label>
+              <label>
+                Verification Detail
+                <textarea rows={2} value={verificationDetail} onChange={(event) => setVerificationDetail(event.target.value)} />
+              </label>
+              <div className={styles.actionGrid}>
+                <button type="button" onClick={() => void updateBuildVerification("pending")} disabled={Boolean(buildStageUpdating)}>
+                  Request Verification
+                </button>
+                <button type="button" onClick={() => void updateBuildVerification("passed")} disabled={Boolean(buildStageUpdating)}>
+                  Mark Verification Passed
+                </button>
+                <button type="button" onClick={() => void updateBuildVerification("failed")} disabled={Boolean(buildStageUpdating)}>
+                  Mark Verification Failed
+                </button>
+              </div>
             </div>
 
             <div className={styles.actionBlock}>
@@ -1024,6 +1327,28 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
               <button type="button" onClick={() => void savePrDraft()} disabled={Boolean(buildStageUpdating) || !buildPrUrl.trim()}>
                 Save PR Draft Metadata
               </button>
+            </div>
+
+            <div className={styles.timelineBlock}>
+              <h3>Execution Runs</h3>
+              {(buildDetail.execution_runs || []).length === 0 ? <div className={styles.muted}>No execution runs yet.</div> : null}
+              {(buildDetail.execution_runs || []).map((run) => (
+                <div key={run.id} className={styles.timelineItem}>
+                  <div className={styles.timelineMeta}>
+                    <span>{formatDateTime(run.started_at)}</span>
+                    <span className={`${styles.badge} ${badgeClass(run.status || "unknown")}`}>{run.status}</span>
+                    <span className={`${styles.badge} ${badgeClass(run.proof_status || "unknown")}`}>proof {run.proof_status}</span>
+                  </div>
+                  <div><strong>{run.command_class || "-"}</strong> · {run.target_scope || "-"}</div>
+                  <div>{run.summary || "-"}</div>
+                  <div className={styles.itemMeta}>lint/build: {run.lint_build_summary || "-"}</div>
+                  <div className={styles.itemMeta}>tests: {run.test_summary || "-"}</div>
+                  <div className={styles.itemMeta}>files: {run.changed_files_summary || "-"}</div>
+                  <div className={styles.itemMeta}>failure note: {run.failure_note || "-"}</div>
+                  <div className={styles.itemMeta}>rollback note: {run.rollback_note || "-"}</div>
+                  {run.execution_output_excerpt ? <pre>{run.execution_output_excerpt}</pre> : null}
+                </div>
+              ))}
             </div>
 
             <div className={styles.timelineBlock}>

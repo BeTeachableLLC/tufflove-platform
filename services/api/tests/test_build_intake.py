@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from app import main
+from app import build_intake_service, main
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -137,6 +137,120 @@ class BuildIntakeEndpointTests(unittest.TestCase):
         self.assertEqual(kwargs["pr_number"], "123")
         self.assertEqual(kwargs["files_changed_summary"], "8 files changed")
 
+    def test_execution_start_endpoint(self):
+        with patch(
+            "app.main.start_build_execution_run",
+            return_value={"id": "build-1", "latest_execution_run_id": "run-1", "stage": "implementation_started"},
+        ) as mock_start:
+            response = main.build_intake_execution_start_endpoint(
+                "build-1",
+                main.BuildExecutionStartRequest(
+                    actor="moe",
+                    command_class="codex",
+                    target_scope="services/api",
+                    summary="start implementation",
+                ),
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["request"]["latest_execution_run_id"], "run-1")
+        _, kwargs = mock_start.call_args
+        self.assertEqual(kwargs["actor"], "moe")
+        self.assertEqual(kwargs["command_class"], "codex")
+
+    def test_execution_complete_endpoint(self):
+        with patch(
+            "app.main.complete_build_execution_run",
+            return_value={"id": "build-1", "stage": "verification_requested", "proof_status": "passed"},
+        ) as mock_complete:
+            response = main.build_intake_execution_complete_endpoint(
+                "build-1",
+                "run-1",
+                main.BuildExecutionCompleteRequest(
+                    actor="moe",
+                    status="passed",
+                    proof_status="passed",
+                    lint_build_summary="lint/build pass",
+                    test_summary="api+worker pass",
+                    request_verification=True,
+                ),
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["request"]["stage"], "verification_requested")
+        _, kwargs = mock_complete.call_args
+        self.assertEqual(kwargs["run_id"], "run-1")
+        self.assertTrue(kwargs["request_verification"])
+
+    def test_verification_endpoint(self):
+        with patch(
+            "app.main.set_build_verification_state",
+            return_value={"id": "build-1", "stage": "ready_for_pr_review", "verification_state": "passed"},
+        ) as mock_verification:
+            response = main.build_intake_verification_endpoint(
+                "build-1",
+                main.BuildVerificationRequest(
+                    actor="moe",
+                    verification_state="passed",
+                    detail="second-model check complete",
+                ),
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["request"]["verification_state"], "passed")
+        _, kwargs = mock_verification.call_args
+        self.assertEqual(kwargs["verification_state"], "passed")
+
+
+class BuildIntakeRecommendationTests(unittest.TestCase):
+    def test_compute_recommendation_requires_execution_when_proof_unknown(self):
+        result = build_intake_service.compute_recommendation(
+            proof_status="unknown",
+            verification_state="not_required",
+            verification_required=False,
+            has_pr_draft=False,
+        )
+        self.assertEqual(result["stage"], "tests_run")
+        self.assertEqual(result["recommendation"], "needs_execution")
+
+    def test_compute_recommendation_marks_revision_when_proof_failed(self):
+        result = build_intake_service.compute_recommendation(
+            proof_status="failed",
+            verification_state="pending",
+            verification_required=True,
+            has_pr_draft=False,
+        )
+        self.assertEqual(result["stage"], "revise_before_pr")
+        self.assertEqual(result["recommendation"], "revise_before_pr")
+
+    def test_compute_recommendation_marks_verification_pending(self):
+        result = build_intake_service.compute_recommendation(
+            proof_status="passed",
+            verification_state="pending",
+            verification_required=True,
+            has_pr_draft=False,
+        )
+        self.assertEqual(result["stage"], "verification_requested")
+        self.assertEqual(result["recommendation"], "verification_requested")
+
+    def test_compute_recommendation_moves_to_approval_pending_when_pr_exists(self):
+        result = build_intake_service.compute_recommendation(
+            proof_status="passed",
+            verification_state="passed",
+            verification_required=True,
+            has_pr_draft=True,
+        )
+        self.assertEqual(result["stage"], "approval_pending")
+        self.assertEqual(result["recommendation"], "approval_pending")
+
+    def test_output_excerpt_redacts_sensitive_tokens(self):
+        text = "access_token=abc123 password=letmein secret=mysecret"
+        sanitized = build_intake_service._sanitize_output_excerpt(text)  # noqa: SLF001
+        self.assertNotIn("abc123", sanitized)
+        self.assertNotIn("letmein", sanitized)
+        self.assertNotIn("mysecret", sanitized)
+        self.assertIn("[REDACTED]", sanitized)
+
 
 class BuildIntakeUiSurfaceTests(unittest.TestCase):
     def test_build_intake_proxy_routes_to_backend(self):
@@ -146,6 +260,9 @@ class BuildIntakeUiSurfaceTests(unittest.TestCase):
         route_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/route-link/route.ts")
         stage_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/stage/route.ts")
         pr_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/pr-draft/route.ts")
+        execution_start_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/execution/start/route.ts")
+        execution_complete_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/execution/[runId]/complete/route.ts")
+        verification_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/verification/route.ts")
 
         self.assertIn("/v1/build/intake", list_source)
         self.assertIn("/v1/build/intake/${id}", detail_source)
@@ -153,6 +270,9 @@ class BuildIntakeUiSurfaceTests(unittest.TestCase):
         self.assertIn("/v1/build/intake/${id}/route", route_source)
         self.assertIn("/v1/build/intake/${id}/stage", stage_source)
         self.assertIn("/v1/build/intake/${id}/pr-draft", pr_source)
+        self.assertIn("/v1/build/intake/${id}/execution/start", execution_start_source)
+        self.assertIn("/v1/build/intake/${id}/execution/${runId}/complete", execution_complete_source)
+        self.assertIn("/v1/build/intake/${id}/verification", verification_source)
 
     def test_command_surface_exposes_build_intake_and_stage_controls(self):
         source = read_repo_file("apps/tufflove-web/app/familyops/router/ModelRouterClient.tsx")
@@ -161,6 +281,9 @@ class BuildIntakeUiSurfaceTests(unittest.TestCase):
         self.assertIn("Create Branch Record", source)
         self.assertIn("Link Router Decision", source)
         self.assertIn("Save PR Draft Metadata", source)
+        self.assertIn("Execution Runner + Proof Ingestion", source)
+        self.assertIn("Complete Execution + Ingest Proof", source)
+        self.assertIn("Verification Hook", source)
         self.assertIn("Build Intake + Router + Mission Timeline", source)
 
 

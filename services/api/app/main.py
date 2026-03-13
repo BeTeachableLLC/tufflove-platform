@@ -69,6 +69,7 @@ from app.mission_history_service import (
     list_familyops_missions,
 )
 from app.build_intake_service import (
+    complete_build_execution_run,
     create_branch_record,
     create_build_request,
     get_build_request,
@@ -76,6 +77,8 @@ from app.build_intake_service import (
     link_router_decision_to_build_request,
     list_build_requests,
     save_pr_draft_metadata,
+    set_build_verification_state,
+    start_build_execution_run,
     transition_build_stage,
 )
 from app.trigger_service import (
@@ -257,10 +260,15 @@ BuildStage = Literal[
     "verification_requested",
     "pr_drafted",
     "approval_pending",
+    "ready_for_pr_review",
     "ready_for_merge",
+    "revise_before_pr",
     "rejected",
     "rerun_requested",
 ]
+ExecutionRunStatus = Literal["running", "passed", "failed", "error", "cancelled"]
+BuildProofStatus = Literal["unknown", "passed", "failed"]
+BuildVerificationState = Literal["not_required", "pending", "passed", "failed"]
 
 
 class ModelRouterRouteRequest(BaseModel):
@@ -343,6 +351,37 @@ class BuildPrDraftRequest(BaseModel):
     test_summary: str = ""
     files_changed_summary: str = ""
     stage: BuildStage = "pr_drafted"
+
+
+class BuildExecutionStartRequest(BaseModel):
+    actor: str = "admin"
+    command_class: str = "codex"
+    target_scope: str = "repo"
+    summary: str = ""
+    router_decision_id: str | None = None
+    mission_id: str | None = None
+
+
+class BuildExecutionCompleteRequest(BaseModel):
+    actor: str = "admin"
+    status: ExecutionRunStatus = "passed"
+    summary: str = ""
+    lint_build_summary: str = ""
+    test_summary: str = ""
+    changed_files_summary: str = ""
+    execution_output_excerpt: str = ""
+    proof_status: BuildProofStatus = "unknown"
+    request_verification: bool = False
+    verification_required: bool | None = None
+    failure_note: str = ""
+    rollback_note: str = ""
+
+
+class BuildVerificationRequest(BaseModel):
+    actor: str = "admin"
+    verification_state: BuildVerificationState = "pending"
+    detail: str = ""
+    verification_required: bool | None = None
 
 
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
@@ -1193,6 +1232,66 @@ def build_intake_pr_draft_endpoint(build_request_id: str, body: BuildPrDraftRequ
         test_summary=body.test_summary,
         files_changed_summary=body.files_changed_summary,
         stage=body.stage,
+    )
+    if request is None:
+        raise HTTPException(status_code=404, detail="Build request not found")
+    return {"ok": True, "request": request}
+
+
+@app.post("/v1/build/intake/{build_request_id}/execution/start", dependencies=[Depends(require_admin)])
+def build_intake_execution_start_endpoint(build_request_id: str, body: BuildExecutionStartRequest):
+    request = start_build_execution_run(
+        build_request_id,
+        actor=body.actor.strip() or "admin",
+        command_class=body.command_class,
+        target_scope=body.target_scope,
+        summary=body.summary,
+        router_decision_id=body.router_decision_id,
+        mission_id=body.mission_id,
+    )
+    if request is None:
+        raise HTTPException(status_code=404, detail="Build request not found")
+    return {"ok": True, "request": request}
+
+
+@app.post("/v1/build/intake/{build_request_id}/execution/{run_id}/complete", dependencies=[Depends(require_admin)])
+def build_intake_execution_complete_endpoint(
+    build_request_id: str,
+    run_id: str,
+    body: BuildExecutionCompleteRequest,
+):
+    try:
+        request = complete_build_execution_run(
+            build_request_id,
+            run_id=run_id,
+            actor=body.actor.strip() or "admin",
+            status=body.status,
+            summary=body.summary,
+            lint_build_summary=body.lint_build_summary,
+            test_summary=body.test_summary,
+            changed_files_summary=body.changed_files_summary,
+            execution_output_excerpt=body.execution_output_excerpt,
+            proof_status=body.proof_status,
+            request_verification=body.request_verification,
+            verification_required=body.verification_required,
+            failure_note=body.failure_note,
+            rollback_note=body.rollback_note,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Execution run not found")
+    if request is None:
+        raise HTTPException(status_code=404, detail="Build request not found")
+    return {"ok": True, "request": request}
+
+
+@app.post("/v1/build/intake/{build_request_id}/verification", dependencies=[Depends(require_admin)])
+def build_intake_verification_endpoint(build_request_id: str, body: BuildVerificationRequest):
+    request = set_build_verification_state(
+        build_request_id,
+        actor=body.actor.strip() or "admin",
+        verification_state=body.verification_state,
+        detail=body.detail,
+        verification_required=body.verification_required,
     )
     if request is None:
         raise HTTPException(status_code=404, detail="Build request not found")
