@@ -13,6 +13,24 @@ TASK_CLASSES = {"implement", "debug", "review", "verify"}
 SUPPORTED_MODELS = {"codex", "claude", "gemini", "openclaw"}
 PROOF_STATUSES = {"unknown", "passing", "failing", "not_run"}
 VERIFICATION_STATUSES = {"not_required", "pending", "passed", "failed"}
+REVIEW_STATES = {
+    "active",
+    "approved_next_step",
+    "needs_changes",
+    "rerun_requested",
+    "second_review_requested",
+    "ready_for_pr_review",
+    "ready_for_merge",
+    "rejected",
+}
+DECISION_ACTIONS = {
+    "approve_next_step",
+    "reject_send_back",
+    "request_rerun",
+    "request_second_model_review",
+    "mark_ready_pr_review",
+    "mark_ready_merge",
+}
 
 DEFAULT_MODEL_BY_TASK_CLASS = {
     "implement": "codex",
@@ -69,6 +87,20 @@ def _normalize_verification_status(raw: str, *, default: str = "pending") -> str
     candidate = str(raw or default).strip().lower()
     if candidate not in VERIFICATION_STATUSES:
         return default
+    return candidate
+
+
+def _normalize_review_state(raw: str, *, default: str = "active") -> str:
+    candidate = str(raw or default).strip().lower()
+    if candidate not in REVIEW_STATES:
+        return default
+    return candidate
+
+
+def _normalize_action(raw: str) -> str:
+    candidate = str(raw or "").strip().lower()
+    if candidate not in DECISION_ACTIONS:
+        raise ValueError("Unsupported action")
     return candidate
 
 
@@ -214,11 +246,13 @@ def _serialize_decision(row: dict[str, Any]) -> dict[str, Any]:
         "selected_model": row["selected_model"],
         "escalation_reason": row["escalation_reason"],
         "output_summary": row["output_summary"],
+        "proof_summary": row["proof_summary"],
         "proof_status": row["proof_status"],
         "verification_required": bool(row["verification_required"]),
         "verification_model": row["verification_model"],
         "verification_status": row["verification_status"],
         "final_recommendation": row["final_recommendation"],
+        "review_state": row["review_state"],
         "mission_id": row["mission_id"],
         "task_id": row["task_id"],
         "operator_id": row["operator_id"],
@@ -245,11 +279,13 @@ def init_model_router_tables() -> None:
                     selected_model text NOT NULL,
                     escalation_reason text NOT NULL DEFAULT '',
                     output_summary text NOT NULL DEFAULT '',
+                    proof_summary text NOT NULL DEFAULT '',
                     proof_status text NOT NULL DEFAULT 'unknown',
                     verification_required boolean NOT NULL DEFAULT false,
                     verification_model text,
                     verification_status text NOT NULL DEFAULT 'not_required',
                     final_recommendation text NOT NULL DEFAULT 'ready_for_pr_review',
+                    review_state text NOT NULL DEFAULT 'active',
                     mission_id text,
                     task_id text,
                     operator_id text,
@@ -260,6 +296,18 @@ def init_model_router_tables() -> None:
                     created_at timestamptz NOT NULL DEFAULT now(),
                     updated_at timestamptz NOT NULL DEFAULT now()
                 );
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE model_router_decisions
+                ADD COLUMN IF NOT EXISTS proof_summary text NOT NULL DEFAULT '';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE model_router_decisions
+                ADD COLUMN IF NOT EXISTS review_state text NOT NULL DEFAULT 'active';
                 """
             )
             cur.execute(
@@ -286,7 +334,118 @@ def init_model_router_tables() -> None:
                 ON model_router_decisions (task_id, created_at DESC);
                 """
             )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_model_router_review_state
+                ON model_router_decisions (tenant_id, review_state, created_at DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_router_decision_events(
+                    id bigserial PRIMARY KEY,
+                    decision_id text NOT NULL REFERENCES model_router_decisions(id) ON DELETE CASCADE,
+                    tenant_id text NOT NULL,
+                    event_type text NOT NULL,
+                    event_status text NOT NULL DEFAULT 'ok',
+                    detail text NOT NULL DEFAULT '',
+                    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+                    created_by text NOT NULL DEFAULT 'admin',
+                    created_at timestamptz NOT NULL DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_model_router_events_decision_created
+                ON model_router_decision_events (decision_id, created_at ASC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_model_router_events_tenant_created
+                ON model_router_decision_events (tenant_id, created_at DESC);
+                """
+            )
         conn.commit()
+
+
+def record_model_router_event(
+    *,
+    decision_id: str,
+    tenant_id: str,
+    event_type: str,
+    event_status: str = "ok",
+    detail: str = "",
+    metadata: dict[str, Any] | None = None,
+    created_by: str = "admin",
+) -> None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO model_router_decision_events(
+                    decision_id,
+                    tenant_id,
+                    event_type,
+                    event_status,
+                    detail,
+                    metadata,
+                    created_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s);
+                """,
+                (
+                    decision_id,
+                    tenant_id,
+                    event_type,
+                    event_status,
+                    str(detail or "").strip(),
+                    _to_jsonb(metadata or {}),
+                    str(created_by or "").strip() or "admin",
+                ),
+            )
+        conn.commit()
+
+
+def list_model_router_decision_events(decision_id: str, *, limit: int = 300) -> list[dict[str, Any]]:
+    safe_limit = min(max(int(limit), 1), 1000)
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    decision_id,
+                    tenant_id,
+                    event_type,
+                    event_status,
+                    detail,
+                    metadata,
+                    created_by,
+                    created_at
+                FROM model_router_decision_events
+                WHERE decision_id = %s
+                ORDER BY created_at ASC
+                LIMIT %s;
+                """,
+                (decision_id, safe_limit),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "decision_id": row["decision_id"],
+            "tenant_id": row["tenant_id"],
+            "event_type": row["event_type"],
+            "status": row["event_status"],
+            "detail": row.get("detail") or "",
+            "metadata": row.get("metadata") or {},
+            "created_by": row.get("created_by"),
+            "at": _to_iso(row.get("created_at")),
+        }
+        for row in rows
+    ]
 
 
 def _get_model_router_decision_row(decision_id: str) -> dict[str, Any] | None:
@@ -303,11 +462,13 @@ def _get_model_router_decision_row(decision_id: str) -> dict[str, Any] | None:
                     selected_model,
                     escalation_reason,
                     output_summary,
+                    proof_summary,
                     proof_status,
                     verification_required,
                     verification_model,
                     verification_status,
                     final_recommendation,
+                    review_state,
                     mission_id,
                     task_id,
                     operator_id,
@@ -326,11 +487,18 @@ def _get_model_router_decision_row(decision_id: str) -> dict[str, Any] | None:
     return row
 
 
-def get_model_router_decision(decision_id: str) -> dict[str, Any] | None:
+def get_model_router_decision(
+    decision_id: str,
+    *,
+    include_events: bool = False,
+) -> dict[str, Any] | None:
     row = _get_model_router_decision_row(decision_id)
     if row is None:
         return None
-    return _serialize_decision(row)
+    decision = _serialize_decision(row)
+    if include_events:
+        decision["events"] = list_model_router_decision_events(decision_id)
+    return decision
 
 
 def create_model_router_decision(
@@ -341,6 +509,7 @@ def create_model_router_decision(
     requested_model: str | None = None,
     escalation_reason: str = "",
     output_summary: str = "",
+    proof_summary: str = "",
     proof_status: str = "unknown",
     mission_id: str | None = None,
     task_id: str | None = None,
@@ -394,11 +563,13 @@ def create_model_router_decision(
                     selected_model,
                     escalation_reason,
                     output_summary,
+                    proof_summary,
                     proof_status,
                     verification_required,
                     verification_model,
                     verification_status,
                     final_recommendation,
+                    review_state,
                     mission_id,
                     task_id,
                     operator_id,
@@ -408,7 +579,7 @@ def create_model_router_decision(
                     created_by
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 );
                 """,
                 (
@@ -420,11 +591,13 @@ def create_model_router_decision(
                     selected_model,
                     str(escalation_reason or "").strip(),
                     str(output_summary or "").strip(),
+                    str(proof_summary or "").strip(),
                     normalized_proof_status,
                     bool(policy["verification_required"]),
                     policy["verification_model"],
                     policy["verification_status"],
                     policy["final_recommendation"],
+                    "active",
                     str(mission_id or "").strip() or None,
                     str(task_id or "").strip() or None,
                     str(operator_id or "").strip() or None,
@@ -435,6 +608,21 @@ def create_model_router_decision(
                 ),
             )
         conn.commit()
+
+    record_model_router_event(
+        decision_id=decision_id,
+        tenant_id=tenant_id,
+        event_type="decision_created",
+        event_status="ok",
+        detail="Decision created",
+        metadata={
+            "task_class": normalized_task_class,
+            "selected_model": selected_model,
+            "verification_status": policy["verification_status"],
+            "final_recommendation": policy["final_recommendation"],
+        },
+        created_by=created_by,
+    )
 
     decision = get_model_router_decision(decision_id)
     if decision is None:
@@ -447,6 +635,7 @@ def update_model_router_decision(
     patch: dict[str, Any],
     *,
     openclaw_verify_enabled: bool | None = None,
+    updated_by: str | None = None,
 ) -> dict[str, Any] | None:
     current = _get_model_router_decision_row(decision_id)
     if current is None:
@@ -462,6 +651,7 @@ def update_model_router_decision(
         next_metadata.update(patch_metadata)
 
     next_proof_status = _normalize_proof_status(str(patch.get("proof_status", current["proof_status"]) or "unknown"))
+    next_proof_summary = str(patch.get("proof_summary", current["proof_summary"]) or "").strip()
     next_verification_required = bool(patch.get("verification_required", current["verification_required"]))
     sensitive_change = bool(next_metadata.get("sensitive_change", False))
 
@@ -489,6 +679,9 @@ def update_model_router_decision(
         verification_status=next_verification_status,
         proof_status=next_proof_status,
     )
+    next_review_state = _normalize_review_state(
+        str(patch.get("review_state", current["review_state"]) or "active"),
+    )
 
     next_metadata["policy_reasons"] = policy["policy_reasons"]
 
@@ -500,11 +693,13 @@ def update_model_router_decision(
                 SET
                     escalation_reason = %s,
                     output_summary = %s,
+                    proof_summary = %s,
                     proof_status = %s,
                     verification_required = %s,
                     verification_model = %s,
                     verification_status = %s,
                     final_recommendation = %s,
+                    review_state = %s,
                     linked_branch = %s,
                     linked_pr = %s,
                     metadata = %s,
@@ -514,11 +709,13 @@ def update_model_router_decision(
                 (
                     str(patch.get("escalation_reason", current["escalation_reason"]) or "").strip(),
                     str(patch.get("output_summary", current["output_summary"]) or "").strip(),
+                    next_proof_summary,
                     next_proof_status,
                     next_verification_required,
                     policy["verification_model"] if next_verification_required else None,
                     next_verification_status,
                     next_final_recommendation,
+                    next_review_state,
                     str(patch.get("linked_branch", current["linked_branch"]) or "").strip() or None,
                     str(patch.get("linked_pr", current["linked_pr"]) or "").strip() or None,
                     _to_jsonb(next_metadata),
@@ -527,7 +724,21 @@ def update_model_router_decision(
             )
         conn.commit()
 
-    return get_model_router_decision(decision_id)
+    record_model_router_event(
+        decision_id=decision_id,
+        tenant_id=current["tenant_id"],
+        event_type="decision_updated",
+        event_status="ok",
+        detail="Decision updated",
+        metadata={
+            "review_state": next_review_state,
+            "verification_status": next_verification_status,
+            "final_recommendation": next_final_recommendation,
+        },
+        created_by=str(updated_by or "").strip() or "admin",
+    )
+
+    return get_model_router_decision(decision_id, include_events=True)
 
 
 def list_model_router_decisions(
@@ -535,6 +746,7 @@ def list_model_router_decisions(
     tenant_id: str,
     task_class: str | None = None,
     verification_status: str | None = None,
+    review_state: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -553,6 +765,11 @@ def list_model_router_decisions(
     if normalized_verification_status:
         conditions.append("verification_status = %s")
         params.append(_normalize_verification_status(normalized_verification_status, default="pending"))
+
+    normalized_review_state = str(review_state or "").strip().lower()
+    if normalized_review_state:
+        conditions.append("review_state = %s")
+        params.append(_normalize_review_state(normalized_review_state))
 
     where_clause = f"WHERE {' AND '.join(conditions)}"
 
@@ -579,11 +796,13 @@ def list_model_router_decisions(
                     selected_model,
                     escalation_reason,
                     output_summary,
+                    proof_summary,
                     proof_status,
                     verification_required,
                     verification_model,
                     verification_status,
                     final_recommendation,
+                    review_state,
                     mission_id,
                     task_id,
                     operator_id,
@@ -610,3 +829,137 @@ def list_model_router_decisions(
         "limit": safe_limit,
         "offset": safe_offset,
     }
+
+
+def apply_model_router_decision_action(
+    decision_id: str,
+    *,
+    action: str,
+    actor: str,
+    note: str = "",
+    requested_model: str | None = None,
+) -> dict[str, Any] | None:
+    current = _get_model_router_decision_row(decision_id)
+    if current is None:
+        return None
+
+    normalized_action = _normalize_action(action)
+    actor_name = str(actor or "").strip() or "admin"
+    note_text = str(note or "").strip()
+
+    current_metadata = current.get("metadata") if isinstance(current.get("metadata"), dict) else {}
+    next_metadata = dict(current_metadata)
+    next_metadata["last_action"] = normalized_action
+    next_metadata["last_action_note"] = note_text
+
+    next_proof_status = _normalize_proof_status(str(current["proof_status"] or "unknown"))
+    next_proof_summary = str(current.get("proof_summary") or "").strip()
+    next_verification_required = bool(current.get("verification_required"))
+    next_verification_model = str(current.get("verification_model") or "").strip() or None
+    next_verification_status = _normalize_verification_status(
+        str(current.get("verification_status") or "not_required"),
+        default="not_required",
+    )
+    next_review_state = _normalize_review_state(str(current.get("review_state") or "active"))
+    next_final_recommendation = str(current.get("final_recommendation") or "ready_for_pr_review")
+
+    if normalized_action == "approve_next_step":
+        next_review_state = "approved_next_step"
+    elif normalized_action == "reject_send_back":
+        next_review_state = "rejected"
+        next_final_recommendation = "revise_before_pr"
+    elif normalized_action == "request_rerun":
+        next_review_state = "rerun_requested"
+        next_proof_status = "not_run"
+        if note_text:
+            next_proof_summary = note_text
+        next_final_recommendation = "fix_proof_before_pr"
+    elif normalized_action == "request_second_model_review":
+        next_review_state = "second_review_requested"
+        next_verification_required = True
+        next_verification_status = "pending"
+        if requested_model:
+            next_verification_model = _normalize_optional_model(
+                requested_model,
+                openclaw_verify_enabled=is_openclaw_verify_enabled(),
+            ) or next_verification_model
+    elif normalized_action == "mark_ready_pr_review":
+        next_review_state = "ready_for_pr_review"
+        if next_verification_required and next_verification_status == "pending":
+            next_verification_status = "passed"
+        next_final_recommendation = "ready_for_pr_review"
+    elif normalized_action == "mark_ready_merge":
+        next_review_state = "ready_for_merge"
+        next_final_recommendation = "ready_for_merge"
+
+    policy = evaluate_verification_policy(
+        task_class=str(current["task_class"]),
+        selected_model=str(current["selected_model"]),
+        proof_status=next_proof_status,
+        sensitive_change=bool(next_metadata.get("sensitive_change", False)),
+        requested_verification_required=next_verification_required,
+        requested_verification_model=next_verification_model,
+    )
+    next_verification_required = bool(policy["verification_required"])
+    next_verification_model = policy["verification_model"] if next_verification_required else None
+    if not next_verification_required:
+        next_verification_status = "not_required"
+    elif next_verification_status == "not_required":
+        next_verification_status = "pending"
+    next_metadata["policy_reasons"] = policy["policy_reasons"]
+
+    if normalized_action not in {"reject_send_back", "mark_ready_pr_review", "mark_ready_merge", "request_rerun"}:
+        next_final_recommendation = compute_final_recommendation(
+            verification_required=next_verification_required,
+            verification_status=next_verification_status,
+            proof_status=next_proof_status,
+        )
+
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE model_router_decisions
+                SET
+                    proof_summary = %s,
+                    proof_status = %s,
+                    verification_required = %s,
+                    verification_model = %s,
+                    verification_status = %s,
+                    final_recommendation = %s,
+                    review_state = %s,
+                    metadata = %s,
+                    updated_at = now()
+                WHERE id = %s;
+                """,
+                (
+                    next_proof_summary,
+                    next_proof_status,
+                    next_verification_required,
+                    next_verification_model,
+                    next_verification_status,
+                    next_final_recommendation,
+                    next_review_state,
+                    _to_jsonb(next_metadata),
+                    decision_id,
+                ),
+            )
+        conn.commit()
+
+    record_model_router_event(
+        decision_id=decision_id,
+        tenant_id=current["tenant_id"],
+        event_type=normalized_action,
+        event_status="ok",
+        detail=note_text or normalized_action.replace("_", " "),
+        metadata={
+            "action": normalized_action,
+            "review_state": next_review_state,
+            "proof_status": next_proof_status,
+            "verification_status": next_verification_status,
+            "final_recommendation": next_final_recommendation,
+        },
+        created_by=actor_name,
+    )
+
+    return get_model_router_decision(decision_id, include_events=True)

@@ -107,6 +107,7 @@ class ModelRouterEndpointTests(unittest.TestCase):
             requested_model="codex",
             escalation_reason="failing_ci_checks",
             output_summary="lint fixed; tests pending",
+            proof_summary="2 failing tests in worker suite",
             proof_status="failing",
             linked_branch="feat/multi-model-escalation-router",
             linked_pr="https://github.com/BeTeachableLLC/tufflove-platform/pull/19",
@@ -128,6 +129,7 @@ class ModelRouterEndpointTests(unittest.TestCase):
         self.assertEqual(kwargs["task_class"], "implement")
         self.assertEqual(kwargs["escalation_reason"], "failing_ci_checks")
         self.assertEqual(kwargs["proof_status"], "failing")
+        self.assertEqual(kwargs["proof_summary"], "2 failing tests in worker suite")
         self.assertEqual(kwargs["linked_branch"], "feat/multi-model-escalation-router")
         self.assertEqual(kwargs["linked_pr"], "https://github.com/BeTeachableLLC/tufflove-platform/pull/19")
         self.assertTrue(kwargs["sensitive_change"])
@@ -154,6 +156,7 @@ class ModelRouterEndpointTests(unittest.TestCase):
                 tenant_id="familyops",
                 task_class="debug",
                 verification_status="pending",
+                review_state="active",
                 limit=20,
                 offset=0,
             )
@@ -163,6 +166,7 @@ class ModelRouterEndpointTests(unittest.TestCase):
         self.assertEqual(kwargs["tenant_id"], "familyops")
         self.assertEqual(kwargs["task_class"], "debug")
         self.assertEqual(kwargs["verification_status"], "pending")
+        self.assertEqual(kwargs["review_state"], "active")
         self.assertEqual(kwargs["limit"], 20)
 
     def test_patch_endpoint_returns_updated_decision(self):
@@ -178,7 +182,45 @@ class ModelRouterEndpointTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertEqual(response["decision"]["verification_status"], "passed")
         _, kwargs = mock_patch.call_args
-        self.assertEqual(kwargs, {})
+        self.assertEqual(kwargs, {"updated_by": "admin"})
+
+    def test_get_endpoint_can_include_linked_mission(self):
+        with (
+            patch(
+                "app.main.get_model_router_decision",
+                return_value={"id": "decision-1", "tenant_id": "familyops", "mission_id": "mission-1", "events": []},
+            ),
+            patch(
+                "app.main.get_familyops_mission",
+                return_value={"id": "mission-1", "status": "blocked", "timeline": [{"event_type": "blocked"}]},
+            ) as mock_mission,
+        ):
+            response = main.model_router_get_endpoint("decision-1", include_mission=True)
+
+        self.assertEqual(response["id"], "decision-1")
+        self.assertIn("linked_mission", response)
+        mock_mission.assert_called_once()
+
+    def test_action_endpoint_executes_requested_action(self):
+        with patch(
+            "app.main.apply_model_router_decision_action",
+            return_value={"id": "decision-1", "review_state": "ready_for_merge"},
+        ) as mock_action:
+            response = main.model_router_action_endpoint(
+                "decision-1",
+                main.ModelRouterActionRequest(
+                    action="mark_ready_merge",
+                    actor="moe",
+                    note="All checks green",
+                ),
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["decision"]["review_state"], "ready_for_merge")
+        _, kwargs = mock_action.call_args
+        self.assertEqual(kwargs["action"], "mark_ready_merge")
+        self.assertEqual(kwargs["actor"], "moe")
+        self.assertEqual(kwargs["note"], "All checks green")
 
 
 class ModelRouterUiSurfaceTests(unittest.TestCase):
@@ -190,15 +232,28 @@ class ModelRouterUiSurfaceTests(unittest.TestCase):
     def test_router_api_routes_proxy_backend(self):
         list_source = read_repo_file("apps/tufflove-web/app/api/familyops/model-router/route.ts")
         detail_source = read_repo_file("apps/tufflove-web/app/api/familyops/model-router/[id]/route.ts")
+        action_source = read_repo_file("apps/tufflove-web/app/api/familyops/model-router/[id]/action/route.ts")
         self.assertIn("/v1/model-router/decisions", list_source)
         self.assertIn("/v1/model-router/route", list_source)
         self.assertIn("/v1/model-router/decision/", detail_source)
+        self.assertIn("/v1/model-router/decision/${id}/action", action_source)
 
-    def test_router_client_shows_verification_and_recommendation(self):
+    def test_router_client_shows_approval_actions_and_timeline(self):
         source = read_repo_file("apps/tufflove-web/app/familyops/router/ModelRouterClient.tsx")
-        self.assertIn("verification_status", source)
-        self.assertIn("final_recommendation", source)
-        self.assertIn("Update Verification", source)
+        self.assertIn("Approve Next Step", source)
+        self.assertIn("Reject / Send Back", source)
+        self.assertIn("Request Re-Run", source)
+        self.assertIn("Request Second-Model Review", source)
+        self.assertIn("Mark Ready for PR Review", source)
+        self.assertIn("Mark Ready for Merge", source)
+        self.assertIn("Unified Timeline", source)
+        self.assertIn("Open GitHub PR", source)
+
+    def test_router_client_has_mobile_responsive_styles(self):
+        source = read_repo_file("apps/tufflove-web/app/familyops/router/ModelRouterClient.module.css")
+        self.assertIn("@media (max-width: 1024px)", source)
+        self.assertIn("@media (max-width: 640px)", source)
+        self.assertIn("min-height: 44px", source)
 
 
 if __name__ == "__main__":

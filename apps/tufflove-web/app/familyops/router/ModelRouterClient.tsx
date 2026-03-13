@@ -2,58 +2,113 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import styles from "./ModelRouterClient.module.css";
 
 type TaskClass = "implement" | "debug" | "review" | "verify";
-type ProofStatus = "unknown" | "passing" | "failing" | "not_run";
+type ReviewState =
+  | "active"
+  | "approved_next_step"
+  | "needs_changes"
+  | "rerun_requested"
+  | "second_review_requested"
+  | "ready_for_pr_review"
+  | "ready_for_merge"
+  | "rejected";
 type VerificationStatus = "not_required" | "pending" | "passed" | "failed";
+type ProofStatus = "unknown" | "passing" | "failing" | "not_run";
+type ActionType =
+  | "approve_next_step"
+  | "reject_send_back"
+  | "request_rerun"
+  | "request_second_model_review"
+  | "mark_ready_pr_review"
+  | "mark_ready_merge";
+
+type TimelineEvent = {
+  at: string | null;
+  event_type: string;
+  status: string;
+  detail: string;
+  metadata?: Record<string, unknown>;
+  created_by?: string | null;
+};
+
+type MissionDetail = {
+  id: string;
+  status: string;
+  task_type: string;
+  summary?: string | null;
+  blocked_reason?: string | null;
+  dry_run?: boolean;
+  created_at?: string | null;
+  completed_at?: string | null;
+  timeline?: TimelineEvent[];
+};
 
 type RouterDecision = {
   id: string;
-  tenant_id: string;
   task_class: TaskClass | string;
   task_type: string | null;
   requested_model: string | null;
   selected_model: string;
   escalation_reason: string;
   output_summary: string;
+  proof_summary: string;
   proof_status: ProofStatus | string;
   verification_required: boolean;
   verification_model: string | null;
   verification_status: VerificationStatus | string;
   final_recommendation: string;
+  review_state: ReviewState | string;
   mission_id: string | null;
-  task_id: string | null;
-  operator_id: string | null;
   linked_branch: string | null;
   linked_pr: string | null;
-  metadata: Record<string, unknown>;
-  created_by: string;
-  created_at: string | null;
   updated_at: string | null;
+  created_at: string | null;
+  metadata?: Record<string, unknown>;
 };
 
-type RouterListResponse = {
+type RouterDecisionDetail = RouterDecision & {
+  events?: TimelineEvent[];
+  linked_mission?: MissionDetail | null;
+};
+
+type ListResponse = {
   items?: RouterDecision[];
   total?: number;
 };
-
-type RouterDetailResponse = RouterDecision;
 
 type ModelRouterClientProps = {
   createdBy: string;
 };
 
-const TASK_CLASS_OPTIONS: TaskClass[] = ["implement", "debug", "review", "verify"];
-const MODEL_OPTIONS = ["auto", "codex", "claude", "gemini", "openclaw"] as const;
-const PROOF_STATUS_OPTIONS: ProofStatus[] = ["unknown", "passing", "failing", "not_run"];
-const VERIFICATION_STATUS_OPTIONS: VerificationStatus[] = ["pending", "passed", "failed", "not_required"];
+const ACTIVE_STATES = new Set<ReviewState | string>([
+  "active",
+  "approved_next_step",
+  "rerun_requested",
+  "second_review_requested",
+]);
+
+const TASK_CLASSES: TaskClass[] = ["implement", "debug", "review", "verify"];
+const REVIEW_STATE_OPTIONS: (ReviewState | "all")[] = [
+  "all",
+  "active",
+  "approved_next_step",
+  "needs_changes",
+  "rerun_requested",
+  "second_review_requested",
+  "ready_for_pr_review",
+  "ready_for_merge",
+  "rejected",
+];
+const VERIFICATION_OPTIONS: (VerificationStatus | "all")[] = ["all", "pending", "passed", "failed", "not_required"];
 
 function parseError(payload: unknown, fallback: string): string {
   if (typeof payload === "string" && payload.trim()) return payload;
   if (payload && typeof payload === "object") {
-    const data = payload as Record<string, unknown>;
-    if (typeof data.error === "string" && data.error.trim()) return data.error;
-    if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
+    const record = payload as Record<string, unknown>;
+    if (typeof record.error === "string" && record.error.trim()) return record.error;
+    if (typeof record.detail === "string" && record.detail.trim()) return record.detail;
   }
   return fallback;
 }
@@ -82,104 +137,116 @@ function pretty(value: unknown): string {
   }
 }
 
-function badgeStyle(value: string): { background: string; color: string; border: string } {
-  const normalized = value.toLowerCase();
-  if (["passed", "ready_for_pr_review", "passing"].includes(normalized)) {
-    return { background: "#052e16", color: "#bbf7d0", border: "1px solid #14532d" };
+function badgeClass(status: string): string {
+  const normalized = status.toLowerCase();
+  if (["passed", "passing", "ready_for_pr_review", "ready_for_merge"].includes(normalized)) return styles.good;
+  if (["failed", "failing", "rejected", "needs_changes", "revise_before_pr"].includes(normalized)) return styles.bad;
+  if (["pending", "not_run", "needs_second_model_review", "rerun_requested", "second_review_requested"].includes(normalized)) {
+    return styles.warn;
   }
-  if (["failed", "revise_before_pr", "failing"].includes(normalized)) {
-    return { background: "#2b0c0c", color: "#fecaca", border: "1px solid #7f1d1d" };
-  }
-  if (["pending", "needs_second_model_review", "not_run"].includes(normalized)) {
-    return { background: "#1f2937", color: "#bfdbfe", border: "1px solid #1d4ed8" };
-  }
-  return { background: "#111", color: "#e5e7eb", border: "1px solid #374151" };
+  return styles.neutral;
+}
+
+function prLink(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  if (/^https?:\/\//.test(raw)) return raw;
+  if (/^\d+$/.test(raw)) return `https://github.com/BeTeachableLLC/tufflove-platform/pull/${raw}`;
+  return null;
+}
+
+function branchLink(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  return `https://github.com/BeTeachableLLC/tufflove-platform/tree/${encodeURIComponent(raw)}`;
 }
 
 export default function ModelRouterClient({ createdBy }: ModelRouterClientProps) {
   const [items, setItems] = useState<RouterDecision[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
-
-  const [taskClassFilter, setTaskClassFilter] = useState("all");
-  const [verificationFilter, setVerificationFilter] = useState("all");
+  const [error, setError] = useState<string | null>(null);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<RouterDecision | null>(null);
+  const [detail, setDetail] = useState<RouterDecisionDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
+  const [taskClassFilter, setTaskClassFilter] = useState<TaskClass | "all">("all");
+  const [reviewStateFilter, setReviewStateFilter] = useState<ReviewState | "all">("all");
+  const [verificationFilter, setVerificationFilter] = useState<VerificationStatus | "all">("all");
+
   const [taskClass, setTaskClass] = useState<TaskClass>("implement");
-  const [taskType, setTaskType] = useState("platform.change");
-  const [requestedModel, setRequestedModel] = useState<(typeof MODEL_OPTIONS)[number]>("auto");
+  const [taskType, setTaskType] = useState("build.implementation");
+  const [requestedModel, setRequestedModel] = useState("codex");
   const [proofStatus, setProofStatus] = useState<ProofStatus>("unknown");
-  const [sensitiveChange, setSensitiveChange] = useState(false);
+  const [proofSummary, setProofSummary] = useState("");
   const [escalationReason, setEscalationReason] = useState("");
   const [outputSummary, setOutputSummary] = useState("");
   const [linkedBranch, setLinkedBranch] = useState("");
   const [linkedPr, setLinkedPr] = useState("");
   const [creating, setCreating] = useState(false);
+
+  const [actionNote, setActionNote] = useState("");
+  const [secondModel, setSecondModel] = useState("gemini");
+  const [actionLoading, setActionLoading] = useState<ActionType | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [lastActionResult, setLastActionResult] = useState<unknown>(null);
+  const [lastActionPayload, setLastActionPayload] = useState<unknown>(null);
 
-  const [verificationStatusPatch, setVerificationStatusPatch] = useState<VerificationStatus>("pending");
-  const [proofStatusPatch, setProofStatusPatch] = useState<ProofStatus>("unknown");
-
-  const loadDecisions = useCallback(async () => {
+  const loadList = useCallback(async () => {
     setLoading(true);
-    setListError(null);
+    setError(null);
 
     const params = new URLSearchParams();
+    params.set("limit", "200");
     if (taskClassFilter !== "all") params.set("task_class", taskClassFilter);
+    if (reviewStateFilter !== "all") params.set("review_state", reviewStateFilter);
     if (verificationFilter !== "all") params.set("verification_status", verificationFilter);
-    params.set("limit", "100");
 
     try {
       const response = await fetch(`/api/familyops/model-router?${params.toString()}`, { cache: "no-store" });
       const payload = await readResponse(response);
       if (!response.ok) {
-        throw new Error(parseError(payload, `Failed to load model routing decisions (${response.status})`));
+        throw new Error(parseError(payload, `Failed to load command queue (${response.status})`));
       }
-      const data = (payload && typeof payload === "object" ? payload : {}) as RouterListResponse;
+      const data = (payload && typeof payload === "object" ? payload : {}) as ListResponse;
       setItems(Array.isArray(data.items) ? data.items : []);
       setTotal(typeof data.total === "number" ? data.total : 0);
-    } catch (error) {
+    } catch (loadError) {
       setItems([]);
-      setListError(error instanceof Error ? error.message : String(error));
+      setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setLoading(false);
     }
-  }, [taskClassFilter, verificationFilter]);
+  }, [taskClassFilter, reviewStateFilter, verificationFilter]);
 
   const loadDetail = useCallback(async (id: string) => {
     setDetailLoading(true);
     setDetailError(null);
     try {
-      const response = await fetch(`/api/familyops/model-router/${encodeURIComponent(id)}`, { cache: "no-store" });
+      const response = await fetch(`/api/familyops/model-router/${encodeURIComponent(id)}?include_mission=true`, {
+        cache: "no-store",
+      });
       const payload = await readResponse(response);
       if (!response.ok) {
-        throw new Error(parseError(payload, `Failed to load decision detail (${response.status})`));
+        throw new Error(parseError(payload, `Failed to load mission detail (${response.status})`));
       }
-      const record = payload as RouterDetailResponse;
-      setDetail(record);
+      setDetail(payload as RouterDecisionDetail);
       setSelectedId(id);
-      setVerificationStatusPatch(
-        (record.verification_status as VerificationStatus) || "pending",
-      );
-      setProofStatusPatch((record.proof_status as ProofStatus) || "unknown");
-    } catch (error) {
+    } catch (loadError) {
       setDetail(null);
       setSelectedId(id);
-      setDetailError(error instanceof Error ? error.message : String(error));
+      setDetailError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setDetailLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void loadDecisions();
-  }, [loadDecisions]);
+    void loadList();
+  }, [loadList]);
 
   useEffect(() => {
     if (!selectedId && items.length > 0) {
@@ -187,118 +254,119 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
     }
   }, [items, selectedId, loadDetail]);
 
-  useEffect(() => {
-    if (selectedId && !items.some((item) => item.id === selectedId)) {
-      setSelectedId(null);
-      setDetail(null);
-    }
-  }, [items, selectedId]);
-
-  const filteredTaskTypes = useMemo(() => {
-    const set = new Set<string>();
-    for (const item of items) {
-      if (item.task_type) set.add(item.task_type);
-    }
-    return Array.from(set).sort();
-  }, [items]);
-
-  async function createDecision(event: React.FormEvent<HTMLFormElement>) {
+  async function createMissionRecord(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setCreating(true);
     setActionError(null);
     try {
-      const payload = {
-        task_class: taskClass,
-        task_type: taskType.trim() || null,
-        requested_model: requestedModel === "auto" ? null : requestedModel,
-        proof_status: proofStatus,
-        sensitive_change: sensitiveChange,
-        escalation_reason: escalationReason.trim(),
-        output_summary: outputSummary.trim(),
-        linked_branch: linkedBranch.trim() || null,
-        linked_pr: linkedPr.trim() || null,
-        created_by: createdBy,
-      };
       const response = await fetch("/api/familyops/model-router", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          task_class: taskClass,
+          task_type: taskType.trim() || null,
+          requested_model: requestedModel.trim() || null,
+          escalation_reason: escalationReason.trim(),
+          output_summary: outputSummary.trim(),
+          proof_summary: proofSummary.trim(),
+          proof_status: proofStatus,
+          linked_branch: linkedBranch.trim() || null,
+          linked_pr: linkedPr.trim() || null,
+          created_by: createdBy,
+        }),
       });
-      const data = await readResponse(response);
+      const payload = await readResponse(response);
       if (!response.ok) {
-        throw new Error(parseError(data, `Failed to create routing decision (${response.status})`));
+        throw new Error(parseError(payload, `Failed to create mission review record (${response.status})`));
       }
-      setLastActionResult(data);
-      await loadDecisions();
+      setLastActionPayload(payload);
+      await loadList();
       const decisionId =
-        data && typeof data === "object" && data !== null
-          ? ((data as { decision?: { id?: string } }).decision?.id ?? null)
-          : null;
+        payload && typeof payload === "object" ? ((payload as { decision?: { id?: string } }).decision?.id ?? null) : null;
       if (decisionId) {
         await loadDetail(decisionId);
       }
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
       setCreating(false);
     }
   }
 
-  async function patchDetail() {
+  async function runAction(action: ActionType) {
     if (!detail) return;
+    setActionLoading(action);
     setActionError(null);
     try {
-      const response = await fetch(`/api/familyops/model-router/${encodeURIComponent(detail.id)}`, {
-        method: "PATCH",
+      const response = await fetch(`/api/familyops/model-router/${encodeURIComponent(detail.id)}/action`, {
+        method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          proof_status: proofStatusPatch,
-          verification_status: verificationStatusPatch,
-          output_summary: detail.output_summary,
+          action,
+          actor: createdBy,
+          note: actionNote.trim(),
+          requested_model: action === "request_second_model_review" ? secondModel : null,
         }),
       });
       const payload = await readResponse(response);
       if (!response.ok) {
-        throw new Error(parseError(payload, `Failed to update verification status (${response.status})`));
+        throw new Error(parseError(payload, `Failed to execute action ${action} (${response.status})`));
       }
-      setLastActionResult(payload);
-      await loadDecisions();
+      setLastActionPayload(payload);
+      setActionNote("");
+      await loadList();
       await loadDetail(detail.id);
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setActionLoading(null);
     }
   }
 
+  const activeQueue = useMemo(
+    () => items.filter((item) => ACTIVE_STATES.has(item.review_state)),
+    [items],
+  );
+  const recentQueue = useMemo(() => items.slice(0, 30), [items]);
+
+  const timeline = useMemo(() => {
+    const records: Array<TimelineEvent & { source: "router" | "mission" }> = [];
+    for (const event of detail?.events || []) {
+      records.push({ ...event, source: "router" });
+    }
+    for (const event of detail?.linked_mission?.timeline || []) {
+      records.push({ ...event, source: "mission" });
+    }
+    records.sort((a, b) => (a.at || "").localeCompare(b.at || ""));
+    return records;
+  }, [detail]);
+
   return (
-    <main style={{ maxWidth: 1320, margin: "0 auto", padding: 24, fontFamily: "sans-serif" }}>
-      <h1 style={{ fontSize: 30, fontWeight: 700, marginBottom: 8 }}>FamilyOps Multi-Model Escalation Router</h1>
-      <p style={{ color: "#9ca3af", marginBottom: 14 }}>
-        Route implementation, debug, review, and verification tasks with explicit escalation and second-model policy.
-      </p>
-      <p style={{ marginBottom: 16 }}>
-        <Link href="/familyops/operators" style={{ textDecoration: "underline" }}>
-          Operators
-        </Link>
-        {" · "}
-        <Link href="/familyops/missions" style={{ textDecoration: "underline" }}>
-          Mission History
-        </Link>
-        {" · "}
-        <Link href="/familyops/triggers" style={{ textDecoration: "underline" }}>
-          Trigger Service
-        </Link>
-      </p>
+    <main className={styles.page}>
+      <header className={styles.header}>
+        <h1>Remote Approval Command Surface</h1>
+        <p>
+          Approve, reroute, and hand off build missions from iPad, iPhone, or MacBook without local-runtime dependency.
+        </p>
+        <p className={styles.links}>
+          <Link href="/familyops/missions">Mission History</Link>
+          <span> · </span>
+          <Link href="/familyops/operators">Operators</Link>
+          <span> · </span>
+          <Link href="/familyops/triggers">Trigger Service</Link>
+        </p>
+      </header>
 
-      {listError ? <div style={{ marginBottom: 12, color: "#ef4444", fontWeight: 600 }}>{listError}</div> : null}
-      {actionError ? <div style={{ marginBottom: 12, color: "#ef4444", fontWeight: 600 }}>{actionError}</div> : null}
+      {error ? <div className={styles.error}>{error}</div> : null}
+      {actionError ? <div className={styles.error}>{actionError}</div> : null}
 
-      <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 14, marginBottom: 16 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Route New Task</h2>
-        <form onSubmit={(event) => void createDecision(event)} style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+      <section className={styles.card}>
+        <h2>Create Mission Review Record</h2>
+        <form className={styles.formGrid} onSubmit={(event) => void createMissionRecord(event)}>
           <label>
-            <div style={{ marginBottom: 4 }}>Task Class</div>
-            <select value={taskClass} onChange={(event) => setTaskClass(event.target.value as TaskClass)} style={{ width: "100%", padding: 8 }}>
-              {TASK_CLASS_OPTIONS.map((option) => (
+            Task Class
+            <select value={taskClass} onChange={(event) => setTaskClass(event.target.value as TaskClass)}>
+              {TASK_CLASSES.map((option) => (
                 <option key={option} value={option}>
                   {option}
                 </option>
@@ -306,69 +374,58 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
             </select>
           </label>
           <label>
-            <div style={{ marginBottom: 4 }}>Task Type</div>
-            <input value={taskType} onChange={(event) => setTaskType(event.target.value)} style={{ width: "100%", padding: 8 }} />
+            Task Type
+            <input value={taskType} onChange={(event) => setTaskType(event.target.value)} />
           </label>
           <label>
-            <div style={{ marginBottom: 4 }}>Requested Model</div>
-            <select
-              value={requestedModel}
-              onChange={(event) => setRequestedModel(event.target.value as (typeof MODEL_OPTIONS)[number])}
-              style={{ width: "100%", padding: 8 }}
-            >
-              {MODEL_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
+            Requested Model
+            <input value={requestedModel} onChange={(event) => setRequestedModel(event.target.value)} />
           </label>
           <label>
-            <div style={{ marginBottom: 4 }}>Proof/Test Status</div>
-            <select value={proofStatus} onChange={(event) => setProofStatus(event.target.value as ProofStatus)} style={{ width: "100%", padding: 8 }}>
-              {PROOF_STATUS_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
+            Proof Status
+            <select value={proofStatus} onChange={(event) => setProofStatus(event.target.value as ProofStatus)}>
+              <option value="unknown">unknown</option>
+              <option value="passing">passing</option>
+              <option value="failing">failing</option>
+              <option value="not_run">not_run</option>
             </select>
           </label>
-          <label style={{ gridColumn: "span 2" }}>
-            <div style={{ marginBottom: 4 }}>Escalation Reason</div>
-            <input value={escalationReason} onChange={(event) => setEscalationReason(event.target.value)} style={{ width: "100%", padding: 8 }} />
+          <label className={styles.span2}>
+            Escalation Summary
+            <input value={escalationReason} onChange={(event) => setEscalationReason(event.target.value)} />
           </label>
-          <label style={{ gridColumn: "span 2" }}>
-            <div style={{ marginBottom: 4 }}>Output Summary</div>
-            <input value={outputSummary} onChange={(event) => setOutputSummary(event.target.value)} style={{ width: "100%", padding: 8 }} />
+          <label className={styles.span2}>
+            Proof/Test Summary
+            <input value={proofSummary} onChange={(event) => setProofSummary(event.target.value)} />
           </label>
-          <label style={{ gridColumn: "span 2" }}>
-            <div style={{ marginBottom: 4 }}>Linked Branch</div>
-            <input value={linkedBranch} onChange={(event) => setLinkedBranch(event.target.value)} style={{ width: "100%", padding: 8 }} />
+          <label className={styles.span2}>
+            Compact Output/Diff Summary
+            <input value={outputSummary} onChange={(event) => setOutputSummary(event.target.value)} />
           </label>
-          <label style={{ gridColumn: "span 2" }}>
-            <div style={{ marginBottom: 4 }}>Linked PR</div>
-            <input value={linkedPr} onChange={(event) => setLinkedPr(event.target.value)} style={{ width: "100%", padding: 8 }} />
+          <label>
+            Branch
+            <input value={linkedBranch} onChange={(event) => setLinkedBranch(event.target.value)} />
           </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input type="checkbox" checked={sensitiveChange} onChange={(event) => setSensitiveChange(event.target.checked)} />
-            Sensitive change (force second-model review)
+          <label>
+            PR URL or Number
+            <input value={linkedPr} onChange={(event) => setLinkedPr(event.target.value)} />
           </label>
-          <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "flex-end", gridColumn: "span 3" }}>
-            <button type="submit" disabled={creating} style={{ padding: "8px 14px" }}>
-              {creating ? "Routing..." : "Route Task"}
+          <div className={styles.formActions}>
+            <button type="submit" disabled={creating}>
+              {creating ? "Saving..." : "Add Review Record"}
             </button>
           </div>
         </form>
       </section>
 
-      <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 14, marginBottom: 16 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Routing Decisions</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10, marginBottom: 10 }}>
+      <section className={styles.card}>
+        <h2>Queue Filters</h2>
+        <div className={styles.filterGrid}>
           <label>
-            <div style={{ marginBottom: 4 }}>Task Class</div>
-            <select value={taskClassFilter} onChange={(event) => setTaskClassFilter(event.target.value)} style={{ width: "100%", padding: 8 }}>
-              <option value="all">All</option>
-              {TASK_CLASS_OPTIONS.map((option) => (
+            Task Class
+            <select value={taskClassFilter} onChange={(event) => setTaskClassFilter(event.target.value as TaskClass | "all")}>
+              <option value="all">all</option>
+              {TASK_CLASSES.map((option) => (
                 <option key={option} value={option}>
                   {option}
                 </option>
@@ -376,201 +433,166 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
             </select>
           </label>
           <label>
-            <div style={{ marginBottom: 4 }}>Verification</div>
-            <select value={verificationFilter} onChange={(event) => setVerificationFilter(event.target.value)} style={{ width: "100%", padding: 8 }}>
-              <option value="all">All</option>
-              {VERIFICATION_STATUS_OPTIONS.map((option) => (
+            Review State
+            <select value={reviewStateFilter} onChange={(event) => setReviewStateFilter(event.target.value as ReviewState | "all")}>
+              {REVIEW_STATE_OPTIONS.map((option) => (
                 <option key={option} value={option}>
                   {option}
                 </option>
               ))}
             </select>
           </label>
-          <div style={{ display: "flex", alignItems: "flex-end" }}>
-            <button type="button" onClick={() => void loadDecisions()} disabled={loading} style={{ padding: "8px 14px" }}>
-              {loading ? "Refreshing..." : "Refresh"}
-            </button>
+          <label>
+            Verification
+            <select value={verificationFilter} onChange={(event) => setVerificationFilter(event.target.value as VerificationStatus | "all")}>
+              {VERIFICATION_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" onClick={() => void loadList()} disabled={loading}>
+            {loading ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+        <p className={styles.muted}>Total records: {total}</p>
+      </section>
+
+      <section className={styles.grid2}>
+        <div className={styles.card}>
+          <h2>Active Review Queue</h2>
+          <div className={styles.list}>
+            {activeQueue.length === 0 ? <div className={styles.muted}>No active review items.</div> : null}
+            {activeQueue.map((item) => (
+              <button key={item.id} type="button" className={styles.item} onClick={() => void loadDetail(item.id)}>
+                <div className={styles.itemHeader}>
+                  <strong>{item.task_type || "build.mission"}</strong>
+                  <span className={`${styles.badge} ${badgeClass(item.review_state)}`}>{item.review_state}</span>
+                </div>
+                <div className={styles.itemMeta}>{item.selected_model} · proof {item.proof_status} · verification {item.verification_status}</div>
+                <div className={styles.itemMeta}>branch: {item.linked_branch || "-"} · pr: {item.linked_pr || "-"}</div>
+              </button>
+            ))}
           </div>
-          <div style={{ display: "flex", alignItems: "flex-end", color: "#9ca3af" }}>Total: {total}</div>
         </div>
 
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "8px 6px" }}>Created</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "8px 6px" }}>Class</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "8px 6px" }}>Task Type</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "8px 6px" }}>Route</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "8px 6px" }}>Verification</th>
-                <th style={{ textAlign: "left", borderBottom: "1px solid #ddd", padding: "8px 6px" }}>Recommendation</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.length === 0 ? (
-                <tr>
-                  <td colSpan={6} style={{ borderBottom: "1px solid #eee", padding: "10px 6px", color: "#9ca3af" }}>
-                    No routing decisions found.
-                  </td>
-                </tr>
-              ) : (
-                items.map((item) => (
-                  <tr
-                    key={item.id}
-                    onClick={() => void loadDetail(item.id)}
-                    style={{ cursor: "pointer", background: selectedId === item.id ? "#f9fafb" : "transparent" }}
-                  >
-                    <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>{formatDateTime(item.created_at)}</td>
-                    <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>{item.task_class}</td>
-                    <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>{item.task_type || "-"}</td>
-                    <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>
-                      {(item.requested_model || "auto")} → {item.selected_model}
-                    </td>
-                    <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>
-                      <span style={{ padding: "2px 8px", borderRadius: 999, fontSize: 12, ...badgeStyle(item.verification_status) }}>
-                        {item.verification_status}
-                      </span>
-                    </td>
-                    <td style={{ borderBottom: "1px solid #eee", padding: "8px 6px" }}>
-                      <span style={{ padding: "2px 8px", borderRadius: 999, fontSize: 12, ...badgeStyle(item.final_recommendation) }}>
-                        {item.final_recommendation}
-                      </span>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+        <div className={styles.card}>
+          <h2>Recent Build Missions</h2>
+          <div className={styles.list}>
+            {recentQueue.length === 0 ? <div className={styles.muted}>No recent records.</div> : null}
+            {recentQueue.map((item) => (
+              <button key={`recent-${item.id}`} type="button" className={styles.item} onClick={() => void loadDetail(item.id)}>
+                <div className={styles.itemHeader}>
+                  <strong>{formatDateTime(item.updated_at || item.created_at)}</strong>
+                  <span className={`${styles.badge} ${badgeClass(item.final_recommendation)}`}>{item.final_recommendation}</span>
+                </div>
+                <div className={styles.itemMeta}>{item.task_class} · selected {item.selected_model} · {item.task_type || "n/a"}</div>
+                <div className={styles.itemMeta}>{item.proof_summary || item.output_summary || item.escalation_reason || "-"}</div>
+              </button>
+            ))}
+          </div>
         </div>
       </section>
 
-      <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 14 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Decision Detail</h2>
-        {detailError ? <div style={{ marginBottom: 10, color: "#ef4444", fontWeight: 600 }}>{detailError}</div> : null}
-        {detailLoading ? <div style={{ color: "#9ca3af" }}>Loading detail...</div> : null}
-        {!detailLoading && !detail ? <div style={{ color: "#9ca3af" }}>Select a routing decision to inspect.</div> : null}
+      <section className={styles.card}>
+        <h2>Mission Approval Detail</h2>
+        {detailLoading ? <div className={styles.muted}>Loading...</div> : null}
+        {detailError ? <div className={styles.error}>{detailError}</div> : null}
+        {!detailLoading && !detail ? <div className={styles.muted}>Select an item from Active or Recent queue.</div> : null}
+
         {detail ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-            <div>
-              <div>
-                <strong>Decision:</strong> {detail.id}
-              </div>
-              <div>
-                <strong>Task:</strong> {detail.task_class} / {detail.task_type || "-"}
-              </div>
-              <div>
-                <strong>Route:</strong> {(detail.requested_model || "auto")} → {detail.selected_model}
-              </div>
-              <div>
-                <strong>Escalation:</strong> {detail.escalation_reason || "-"}
-              </div>
-              <div>
-                <strong>Proof Status:</strong>{" "}
-                <span style={{ padding: "2px 8px", borderRadius: 999, fontSize: 12, ...badgeStyle(detail.proof_status) }}>{detail.proof_status}</span>
-              </div>
-              <div>
-                <strong>Verification:</strong>{" "}
-                <span style={{ padding: "2px 8px", borderRadius: 999, fontSize: 12, ...badgeStyle(detail.verification_status) }}>
-                  {detail.verification_status}
-                </span>
-                {detail.verification_model ? ` via ${detail.verification_model}` : ""}
-              </div>
-              <div>
-                <strong>Recommendation:</strong>{" "}
-                <span style={{ padding: "2px 8px", borderRadius: 999, fontSize: 12, ...badgeStyle(detail.final_recommendation) }}>
-                  {detail.final_recommendation}
-                </span>
-              </div>
-              <div>
-                <strong>Branch/PR:</strong> {detail.linked_branch || "-"} / {detail.linked_pr || "-"}
-              </div>
+          <div className={styles.detailWrap}>
+            <div className={styles.detailGrid}>
+              <div><strong>ID:</strong> {detail.id}</div>
+              <div><strong>Task:</strong> {detail.task_type || "-"} ({detail.task_class})</div>
+              <div><strong>Route:</strong> {(detail.requested_model || "auto")} → {detail.selected_model}</div>
+              <div><strong>State:</strong> <span className={`${styles.badge} ${badgeClass(detail.review_state)}`}>{detail.review_state}</span></div>
+              <div><strong>Verification:</strong> <span className={`${styles.badge} ${badgeClass(detail.verification_status)}`}>{detail.verification_status}</span></div>
+              <div><strong>Recommendation:</strong> <span className={`${styles.badge} ${badgeClass(detail.final_recommendation)}`}>{detail.final_recommendation}</span></div>
+              <div><strong>Escalation:</strong> {detail.escalation_reason || "-"}</div>
+              <div><strong>Proof:</strong> {detail.proof_summary || "-"} ({detail.proof_status})</div>
+              <div><strong>Output Summary:</strong> {detail.output_summary || "-"}</div>
+              <div><strong>Mission:</strong> {detail.mission_id || "-"}</div>
             </div>
-            <div>
-              <label style={{ display: "block", marginBottom: 8 }}>
-                <div style={{ marginBottom: 4 }}>Proof Status</div>
-                <select value={proofStatusPatch} onChange={(event) => setProofStatusPatch(event.target.value as ProofStatus)} style={{ width: "100%", padding: 8 }}>
-                  {PROOF_STATUS_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
+
+            <div className={styles.linkRow}>
+              {branchLink(detail.linked_branch) ? (
+                <a href={branchLink(detail.linked_branch) || "#"} target="_blank" rel="noreferrer">
+                  Open Branch
+                </a>
+              ) : (
+                <span className={styles.muted}>No branch linked</span>
+              )}
+              {prLink(detail.linked_pr) ? (
+                <a href={prLink(detail.linked_pr) || "#"} target="_blank" rel="noreferrer">
+                  Open GitHub PR
+                </a>
+              ) : (
+                <span className={styles.muted}>No PR linked</span>
+              )}
+            </div>
+
+            <div className={styles.actionBlock}>
+              <label>
+                Action Note
+                <textarea value={actionNote} onChange={(event) => setActionNote(event.target.value)} rows={3} />
+              </label>
+              <label>
+                Second-Model Review Target
+                <select value={secondModel} onChange={(event) => setSecondModel(event.target.value)}>
+                  <option value="gemini">gemini</option>
+                  <option value="claude">claude</option>
+                  <option value="codex">codex</option>
+                  <option value="openclaw">openclaw (optional)</option>
                 </select>
               </label>
-              <label style={{ display: "block", marginBottom: 8 }}>
-                <div style={{ marginBottom: 4 }}>Verification Status</div>
-                <select
-                  value={verificationStatusPatch}
-                  onChange={(event) => setVerificationStatusPatch(event.target.value as VerificationStatus)}
-                  style={{ width: "100%", padding: 8 }}
-                >
-                  {VERIFICATION_STATUS_OPTIONS.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button type="button" onClick={() => void patchDetail()} style={{ padding: "8px 14px" }}>
-                Update Verification
-              </button>
+              <div className={styles.actionGrid}>
+                <button type="button" onClick={() => void runAction("approve_next_step")} disabled={Boolean(actionLoading)}>Approve Next Step</button>
+                <button type="button" onClick={() => void runAction("reject_send_back")} disabled={Boolean(actionLoading)}>Reject / Send Back</button>
+                <button type="button" onClick={() => void runAction("request_rerun")} disabled={Boolean(actionLoading)}>Request Re-Run</button>
+                <button type="button" onClick={() => void runAction("request_second_model_review")} disabled={Boolean(actionLoading)}>Request Second-Model Review</button>
+                <button type="button" onClick={() => void runAction("mark_ready_pr_review")} disabled={Boolean(actionLoading)}>Mark Ready for PR Review</button>
+                <button type="button" onClick={() => void runAction("mark_ready_merge")} disabled={Boolean(actionLoading)}>Mark Ready for Merge</button>
+              </div>
+              {actionLoading ? <div className={styles.muted}>Running {actionLoading}...</div> : null}
             </div>
-            <div style={{ gridColumn: "span 2" }}>
-              <strong>Output Summary</strong>
-              <pre
-                style={{
-                  marginTop: 8,
-                  whiteSpace: "pre-wrap",
-                  overflowX: "auto",
-                  background: "#111",
-                  color: "#e5e7eb",
-                  borderRadius: 8,
-                  padding: 12,
-                }}
-              >
-                {detail.output_summary || "-"}
-              </pre>
+
+            <div className={styles.timelineBlock}>
+              <h3>Unified Timeline (Command Surface + Mission History)</h3>
+              {timeline.length === 0 ? <div className={styles.muted}>No timeline events yet.</div> : null}
+              {timeline.map((event, index) => (
+                <div key={`${event.at || "no-time"}-${event.event_type}-${index}`} className={styles.timelineItem}>
+                  <div className={styles.timelineMeta}>
+                    <span>{formatDateTime(event.at)}</span>
+                    <span className={`${styles.badge} ${badgeClass(event.status)}`}>{event.status}</span>
+                    <span className={styles.sourceTag}>{event.source}</span>
+                  </div>
+                  <div><strong>{event.event_type}</strong></div>
+                  <div>{event.detail || "-"}</div>
+                  {event.metadata ? <pre>{pretty(event.metadata)}</pre> : null}
+                </div>
+              ))}
             </div>
-            <div style={{ gridColumn: "span 2" }}>
-              <strong>Metadata</strong>
-              <pre
-                style={{
-                  marginTop: 8,
-                  whiteSpace: "pre-wrap",
-                  overflowX: "auto",
-                  background: "#111",
-                  color: "#e5e7eb",
-                  borderRadius: 8,
-                  padding: 12,
-                }}
-              >
-                {pretty(detail.metadata)}
-              </pre>
-            </div>
+
+            {detail.linked_mission ? (
+              <div className={styles.timelineBlock}>
+                <h3>Linked Mission Snapshot</h3>
+                <div><strong>Status:</strong> {detail.linked_mission.status}</div>
+                <div><strong>Task Type:</strong> {detail.linked_mission.task_type}</div>
+                <div><strong>Summary:</strong> {detail.linked_mission.summary || "-"}</div>
+                <div><strong>Blocked Reason:</strong> {detail.linked_mission.blocked_reason || "-"}</div>
+                <div><strong>Dry Run:</strong> {detail.linked_mission.dry_run ? "true" : "false"}</div>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </section>
 
-      {lastActionResult ? (
-        <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 14, marginTop: 16 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 600, marginTop: 0 }}>Last API Result</h2>
-          <pre
-            style={{
-              margin: 0,
-              whiteSpace: "pre-wrap",
-              overflowX: "auto",
-              background: "#111",
-              color: "#e5e7eb",
-              borderRadius: 8,
-              padding: 12,
-            }}
-          >
-            {pretty(lastActionResult)}
-          </pre>
-          {filteredTaskTypes.length > 0 ? (
-            <p style={{ marginTop: 8, marginBottom: 0, color: "#9ca3af" }}>
-              Observed task types in history: {filteredTaskTypes.join(", ")}
-            </p>
-          ) : null}
+      {lastActionPayload ? (
+        <section className={styles.card}>
+          <h2>Last API Response</h2>
+          <pre>{pretty(lastActionPayload)}</pre>
         </section>
       ) : null}
     </main>

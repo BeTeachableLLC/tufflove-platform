@@ -11,7 +11,7 @@ export default async function FamilyOpsModelRouterPage() {
     }
     return (
       <main style={{ maxWidth: 860, margin: "0 auto", padding: 24, fontFamily: "sans-serif" }}>
-        <h1 style={{ fontSize: 30, fontWeight: 700, marginBottom: 8 }}>FamilyOps Model Router</h1>
+        <h1 style={{ fontSize: 30, fontWeight: 700, marginBottom: 8 }}>Remote Approval Command Surface</h1>
         <div
           style={{
             marginTop: 16,

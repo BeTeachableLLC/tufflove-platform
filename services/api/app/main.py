@@ -45,10 +45,12 @@ from app.operator_service import (
     update_operator_version,
 )
 from app.model_router_service import (
+    apply_model_router_decision_action,
     create_model_router_decision,
     get_model_router_decision,
     init_model_router_tables,
     list_model_router_decisions,
+    list_model_router_decision_events,
     update_model_router_decision,
 )
 from app.brand_approval_service import (
@@ -218,6 +220,24 @@ class OperatorRunRequest(BaseModel):
 ModelTaskClass = Literal["implement", "debug", "review", "verify"]
 ProofStatus = Literal["unknown", "passing", "failing", "not_run"]
 VerificationStatus = Literal["not_required", "pending", "passed", "failed"]
+ReviewState = Literal[
+    "active",
+    "approved_next_step",
+    "needs_changes",
+    "rerun_requested",
+    "second_review_requested",
+    "ready_for_pr_review",
+    "ready_for_merge",
+    "rejected",
+]
+DecisionActionType = Literal[
+    "approve_next_step",
+    "reject_send_back",
+    "request_rerun",
+    "request_second_model_review",
+    "mark_ready_pr_review",
+    "mark_ready_merge",
+]
 
 
 class ModelRouterRouteRequest(BaseModel):
@@ -227,6 +247,7 @@ class ModelRouterRouteRequest(BaseModel):
     requested_model: str | None = None
     escalation_reason: str = ""
     output_summary: str = ""
+    proof_summary: str = ""
     proof_status: ProofStatus = "unknown"
     mission_id: str | None = None
     task_id: str | None = None
@@ -243,13 +264,23 @@ class ModelRouterRouteRequest(BaseModel):
 class ModelRouterPatchRequest(BaseModel):
     escalation_reason: str | None = None
     output_summary: str | None = None
+    proof_summary: str | None = None
     proof_status: ProofStatus | None = None
     verification_required: bool | None = None
     verification_model: str | None = None
     verification_status: VerificationStatus | None = None
+    review_state: ReviewState | None = None
     linked_branch: str | None = None
     linked_pr: str | None = None
     metadata: dict | None = None
+    updated_by: str = "admin"
+
+
+class ModelRouterActionRequest(BaseModel):
+    action: DecisionActionType
+    actor: str = "admin"
+    note: str = ""
+    requested_model: str | None = None
 
 
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
@@ -908,6 +939,7 @@ def model_router_route_endpoint(body: ModelRouterRouteRequest):
         requested_model=body.requested_model,
         escalation_reason=body.escalation_reason,
         output_summary=body.output_summary,
+        proof_summary=body.proof_summary,
         proof_status=body.proof_status,
         mission_id=body.mission_id,
         task_id=body.task_id,
@@ -928,6 +960,7 @@ def model_router_list_endpoint(
     tenant_id: str = "familyops",
     task_class: str | None = None,
     verification_status: str | None = None,
+    review_state: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ):
@@ -938,26 +971,57 @@ def model_router_list_endpoint(
         tenant_id=tenant_id,
         task_class=task_class,
         verification_status=verification_status,
+        review_state=review_state,
         limit=limit,
         offset=offset,
     )
 
 
 @app.get("/v1/model-router/decision/{decision_id}", dependencies=[Depends(require_admin)])
-def model_router_get_endpoint(decision_id: str):
-    decision = get_model_router_decision(decision_id)
+def model_router_get_endpoint(decision_id: str, include_mission: bool = False):
+    decision = get_model_router_decision(decision_id, include_events=True)
     if decision is None:
         raise HTTPException(status_code=404, detail="Model router decision not found")
+    if include_mission and decision.get("mission_id"):
+        linked_mission = get_familyops_mission(str(decision["mission_id"]), tenant_id=str(decision.get("tenant_id") or "familyops"))
+        if linked_mission is not None:
+            decision["linked_mission"] = linked_mission
     return decision
 
 
 @app.patch("/v1/model-router/decision/{decision_id}", dependencies=[Depends(require_admin)])
 def model_router_patch_endpoint(decision_id: str, body: ModelRouterPatchRequest):
     patch = body.model_dump(exclude_unset=True)
-    updated = update_model_router_decision(decision_id, patch)
+    updated_by = str(patch.pop("updated_by", body.updated_by)).strip() or "admin"
+    updated = update_model_router_decision(decision_id, patch, updated_by=updated_by)
     if updated is None:
         raise HTTPException(status_code=404, detail="Model router decision not found")
     return {"ok": True, "decision": updated}
+
+
+@app.post("/v1/model-router/decision/{decision_id}/action", dependencies=[Depends(require_admin)])
+def model_router_action_endpoint(decision_id: str, body: ModelRouterActionRequest):
+    updated = apply_model_router_decision_action(
+        decision_id,
+        action=body.action,
+        actor=body.actor.strip() or "admin",
+        note=body.note,
+        requested_model=body.requested_model,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Model router decision not found")
+    return {"ok": True, "decision": updated}
+
+
+@app.get("/v1/model-router/decision/{decision_id}/events", dependencies=[Depends(require_admin)])
+def model_router_decision_events_endpoint(decision_id: str, limit: int = 300):
+    decision = get_model_router_decision(decision_id)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="Model router decision not found")
+    return {
+        "decision_id": decision_id,
+        "events": list_model_router_decision_events(decision_id, limit=limit),
+    }
 
 
 @app.get("/v1/ghl/oauth/start")

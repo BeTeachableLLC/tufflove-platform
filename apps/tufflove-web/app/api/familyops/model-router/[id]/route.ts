@@ -8,7 +8,7 @@ type Context = {
   }>;
 };
 
-export async function GET(_request: Request, context: Context) {
+export async function GET(request: Request, context: Context) {
   const access = await requireFamilyOpsAdmin();
   if (!access.ok) {
     return NextResponse.json({ error: access.reason }, { status: access.status });
@@ -16,7 +16,9 @@ export async function GET(_request: Request, context: Context) {
 
   const { id: rawId } = await context.params;
   const id = encodeURIComponent(rawId);
-  return proxyAdminRequest(`/v1/model-router/decision/${id}`);
+  const url = new URL(request.url);
+  const suffix = url.searchParams.toString();
+  return proxyAdminRequest(`/v1/model-router/decision/${id}${suffix ? `?${suffix}` : ""}`);
 }
 
 export async function PATCH(request: Request, context: Context) {
