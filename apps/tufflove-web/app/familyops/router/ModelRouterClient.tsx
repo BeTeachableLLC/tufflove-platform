@@ -78,6 +78,47 @@ type ListResponse = {
   total?: number;
 };
 
+type BuildBranchRecord = {
+  id: string;
+  branch_name: string;
+  source_branch: string;
+  status: string;
+  created_at: string | null;
+};
+
+type BuildRequest = {
+  id: string;
+  goal: string;
+  scope_summary: string;
+  constraints_json: Record<string, unknown>;
+  requested_model_lane: string;
+  sensitive_change: boolean;
+  desired_proof: string;
+  stage: string;
+  router_decision_id: string | null;
+  mission_id: string | null;
+  branch_name: string | null;
+  pr_url: string | null;
+  pr_number: string | null;
+  proof_summary: string;
+  test_summary: string;
+  files_changed_summary: string;
+  created_at: string | null;
+  updated_at: string | null;
+  branches?: BuildBranchRecord[];
+};
+
+type BuildRequestDetail = BuildRequest & {
+  timeline?: TimelineEvent[];
+  linked_router_decision?: RouterDecision | null;
+  linked_mission?: MissionDetail | null;
+};
+
+type BuildListResponse = {
+  items?: BuildRequest[];
+  total?: number;
+};
+
 type ModelRouterClientProps = {
   createdBy: string;
 };
@@ -102,6 +143,19 @@ const REVIEW_STATE_OPTIONS: (ReviewState | "all")[] = [
   "rejected",
 ];
 const VERIFICATION_OPTIONS: (VerificationStatus | "all")[] = ["all", "pending", "passed", "failed", "not_required"];
+const BUILD_STAGE_OPTIONS = [
+  "intake",
+  "routed",
+  "branch_created",
+  "implementation_started",
+  "tests_run",
+  "verification_requested",
+  "pr_drafted",
+  "approval_pending",
+  "ready_for_merge",
+  "rejected",
+  "rerun_requested",
+] as const;
 
 function parseError(payload: unknown, fallback: string): string {
   if (typeof payload === "string" && payload.trim()) return payload;
@@ -195,6 +249,34 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
   const [actionError, setActionError] = useState<string | null>(null);
   const [lastActionPayload, setLastActionPayload] = useState<unknown>(null);
 
+  const [buildItems, setBuildItems] = useState<BuildRequest[]>([]);
+  const [buildTotal, setBuildTotal] = useState(0);
+  const [buildLoading, setBuildLoading] = useState(false);
+  const [buildError, setBuildError] = useState<string | null>(null);
+  const [buildStageFilter, setBuildStageFilter] = useState<string>("all");
+  const [selectedBuildId, setSelectedBuildId] = useState<string | null>(null);
+  const [buildDetail, setBuildDetail] = useState<BuildRequestDetail | null>(null);
+  const [buildDetailLoading, setBuildDetailLoading] = useState(false);
+  const [buildDetailError, setBuildDetailError] = useState<string | null>(null);
+
+  const [buildGoal, setBuildGoal] = useState("");
+  const [buildScope, setBuildScope] = useState("");
+  const [buildConstraintsText, setBuildConstraintsText] = useState("{}");
+  const [buildRequestedLane, setBuildRequestedLane] = useState("codex");
+  const [buildSensitive, setBuildSensitive] = useState(false);
+  const [buildDesiredProof, setBuildDesiredProof] = useState("");
+  const [buildCreating, setBuildCreating] = useState(false);
+
+  const [buildLinkDecisionId, setBuildLinkDecisionId] = useState("");
+  const [buildBranchName, setBuildBranchName] = useState("");
+  const [buildStageDetail, setBuildStageDetail] = useState("");
+  const [buildStageUpdating, setBuildStageUpdating] = useState<string | null>(null);
+  const [buildPrUrl, setBuildPrUrl] = useState("");
+  const [buildPrNumber, setBuildPrNumber] = useState("");
+  const [buildPrProofSummary, setBuildPrProofSummary] = useState("");
+  const [buildPrTestSummary, setBuildPrTestSummary] = useState("");
+  const [buildPrFilesSummary, setBuildPrFilesSummary] = useState("");
+
   const loadList = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -221,6 +303,59 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       setLoading(false);
     }
   }, [taskClassFilter, reviewStateFilter, verificationFilter]);
+
+  const loadBuildList = useCallback(async () => {
+    setBuildLoading(true);
+    setBuildError(null);
+    const params = new URLSearchParams();
+    params.set("limit", "200");
+    if (buildStageFilter !== "all") params.set("stage", buildStageFilter);
+    try {
+      const response = await fetch(`/api/familyops/build-intake?${params.toString()}`, { cache: "no-store" });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to load build intake queue (${response.status})`));
+      }
+      const data = (payload && typeof payload === "object" ? payload : {}) as BuildListResponse;
+      setBuildItems(Array.isArray(data.items) ? data.items : []);
+      setBuildTotal(typeof data.total === "number" ? data.total : 0);
+    } catch (loadError) {
+      setBuildItems([]);
+      setBuildError(loadError instanceof Error ? loadError.message : String(loadError));
+    } finally {
+      setBuildLoading(false);
+    }
+  }, [buildStageFilter]);
+
+  const loadBuildDetail = useCallback(async (id: string) => {
+    setBuildDetailLoading(true);
+    setBuildDetailError(null);
+    try {
+      const response = await fetch(`/api/familyops/build-intake/${encodeURIComponent(id)}?include_timeline=true`, {
+        cache: "no-store",
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to load build detail (${response.status})`));
+      }
+      const data = payload as BuildRequestDetail;
+      setBuildDetail(data);
+      setSelectedBuildId(id);
+      setBuildLinkDecisionId(data.router_decision_id || "");
+      setBuildBranchName(data.branch_name || "");
+      setBuildPrUrl(data.pr_url || "");
+      setBuildPrNumber(data.pr_number || "");
+      setBuildPrProofSummary(data.proof_summary || "");
+      setBuildPrTestSummary(data.test_summary || "");
+      setBuildPrFilesSummary(data.files_changed_summary || "");
+    } catch (loadError) {
+      setBuildDetail(null);
+      setSelectedBuildId(id);
+      setBuildDetailError(loadError instanceof Error ? loadError.message : String(loadError));
+    } finally {
+      setBuildDetailLoading(false);
+    }
+  }, []);
 
   const loadDetail = useCallback(async (id: string) => {
     setDetailLoading(true);
@@ -253,6 +388,16 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       void loadDetail(items[0].id);
     }
   }, [items, selectedId, loadDetail]);
+
+  useEffect(() => {
+    void loadBuildList();
+  }, [loadBuildList]);
+
+  useEffect(() => {
+    if (!selectedBuildId && buildItems.length > 0) {
+      void loadBuildDetail(buildItems[0].id);
+    }
+  }, [buildItems, selectedBuildId, loadBuildDetail]);
 
   async function createMissionRecord(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -323,11 +468,176 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
     }
   }
 
+  async function createBuildIntake(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBuildCreating(true);
+    setActionError(null);
+    try {
+      let constraintsJson: Record<string, unknown> = {};
+      if (buildConstraintsText.trim()) {
+        constraintsJson = JSON.parse(buildConstraintsText) as Record<string, unknown>;
+      }
+      const response = await fetch("/api/familyops/build-intake", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          goal: buildGoal.trim(),
+          scope_summary: buildScope.trim(),
+          constraints_json: constraintsJson,
+          requested_model_lane: buildRequestedLane.trim() || "codex",
+          sensitive_change: buildSensitive,
+          desired_proof: buildDesiredProof.trim(),
+          created_by: createdBy,
+        }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to create build intake (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      setBuildGoal("");
+      setBuildScope("");
+      setBuildConstraintsText("{}");
+      setBuildDesiredProof("");
+      await loadBuildList();
+      const requestId =
+        payload && typeof payload === "object" ? ((payload as { request?: { id?: string } }).request?.id ?? null) : null;
+      if (requestId) {
+        await loadBuildDetail(requestId);
+      }
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBuildCreating(false);
+    }
+  }
+
+  async function createBuildBranch() {
+    if (!buildDetail) return;
+    setBuildStageUpdating("branch_created");
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/familyops/build-intake/${encodeURIComponent(buildDetail.id)}/branch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actor: createdBy,
+          source_branch: "main",
+          branch_name: buildBranchName.trim() || null,
+        }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to create branch record (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      await loadBuildList();
+      await loadBuildDetail(buildDetail.id);
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBuildStageUpdating(null);
+    }
+  }
+
+  async function linkBuildToRouterDecision() {
+    if (!buildDetail || !buildLinkDecisionId.trim()) return;
+    setBuildStageUpdating("routed");
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/familyops/build-intake/${encodeURIComponent(buildDetail.id)}/route-link`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          decision_id: buildLinkDecisionId.trim(),
+          actor: createdBy,
+        }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to link router decision (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      await loadBuildList();
+      await loadBuildDetail(buildDetail.id);
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBuildStageUpdating(null);
+    }
+  }
+
+  async function updateBuildStage(stage: (typeof BUILD_STAGE_OPTIONS)[number]) {
+    if (!buildDetail) return;
+    setBuildStageUpdating(stage);
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/familyops/build-intake/${encodeURIComponent(buildDetail.id)}/stage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          stage,
+          actor: createdBy,
+          detail: buildStageDetail.trim(),
+        }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to update build stage (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      setBuildStageDetail("");
+      await loadBuildList();
+      await loadBuildDetail(buildDetail.id);
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBuildStageUpdating(null);
+    }
+  }
+
+  async function savePrDraft() {
+    if (!buildDetail || !buildPrUrl.trim()) return;
+    setBuildStageUpdating("pr_drafted");
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/familyops/build-intake/${encodeURIComponent(buildDetail.id)}/pr-draft`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actor: createdBy,
+          pr_url: buildPrUrl.trim(),
+          pr_number: buildPrNumber.trim() || null,
+          proof_summary: buildPrProofSummary.trim(),
+          test_summary: buildPrTestSummary.trim(),
+          files_changed_summary: buildPrFilesSummary.trim(),
+          stage: "pr_drafted",
+        }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to save PR draft metadata (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      await loadBuildList();
+      await loadBuildDetail(buildDetail.id);
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBuildStageUpdating(null);
+    }
+  }
+
   const activeQueue = useMemo(
     () => items.filter((item) => ACTIVE_STATES.has(item.review_state)),
     [items],
   );
   const recentQueue = useMemo(() => items.slice(0, 30), [items]);
+  const buildActiveQueue = useMemo(
+    () => buildItems.filter((item) => ["intake", "routed", "branch_created", "implementation_started", "tests_run", "verification_requested", "pr_drafted", "approval_pending"].includes(item.stage)),
+    [buildItems],
+  );
+  const buildRecentQueue = useMemo(() => buildItems.slice(0, 30), [buildItems]);
 
   const timeline = useMemo(() => {
     const records: Array<TimelineEvent & { source: "router" | "mission" }> = [];
@@ -340,6 +650,17 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
     records.sort((a, b) => (a.at || "").localeCompare(b.at || ""));
     return records;
   }, [detail]);
+
+  const buildTimeline = useMemo(() => {
+    const records: Array<TimelineEvent & { source: "build" | "router" | "mission" }> = [];
+    for (const event of buildDetail?.timeline || []) {
+      const sourceRaw = event.metadata && typeof event.metadata === "object" ? String((event.metadata as Record<string, unknown>).source || "build") : "build";
+      const source = sourceRaw === "model_router" ? "router" : sourceRaw === "mission_history" ? "mission" : "build";
+      records.push({ ...event, source });
+    }
+    records.sort((a, b) => (a.at || "").localeCompare(b.at || ""));
+    return records;
+  }, [buildDetail]);
 
   return (
     <main className={styles.page}>
@@ -358,7 +679,43 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       </header>
 
       {error ? <div className={styles.error}>{error}</div> : null}
+      {buildError ? <div className={styles.error}>{buildError}</div> : null}
       {actionError ? <div className={styles.error}>{actionError}</div> : null}
+
+      <section className={styles.card}>
+        <h2>Build Intake</h2>
+        <form className={styles.formGrid} onSubmit={(event) => void createBuildIntake(event)}>
+          <label className={styles.span2}>
+            Goal
+            <input value={buildGoal} onChange={(event) => setBuildGoal(event.target.value)} placeholder="Implement build-intake automation for remote approvals" />
+          </label>
+          <label className={styles.span2}>
+            Scope
+            <input value={buildScope} onChange={(event) => setBuildScope(event.target.value)} placeholder="Minimal coherent API + UI + tests" />
+          </label>
+          <label>
+            Requested Model Lane
+            <input value={buildRequestedLane} onChange={(event) => setBuildRequestedLane(event.target.value)} />
+          </label>
+          <label>
+            Desired Proof
+            <input value={buildDesiredProof} onChange={(event) => setBuildDesiredProof(event.target.value)} placeholder="web lint/build, worker/api tests" />
+          </label>
+          <label className={styles.span2}>
+            Constraints JSON
+            <textarea rows={3} value={buildConstraintsText} onChange={(event) => setBuildConstraintsText(event.target.value)} />
+          </label>
+          <label className={styles.checkboxLabel}>
+            <input type="checkbox" checked={buildSensitive} onChange={(event) => setBuildSensitive(event.target.checked)} />
+            Sensitive change (force stricter verification)
+          </label>
+          <div className={styles.formActions}>
+            <button type="submit" disabled={buildCreating}>
+              {buildCreating ? "Submitting..." : "Submit Build Intake"}
+            </button>
+          </div>
+        </form>
+      </section>
 
       <section className={styles.card}>
         <h2>Create Mission Review Record</h2>
@@ -459,6 +816,65 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
         <p className={styles.muted}>Total records: {total}</p>
       </section>
 
+      <section className={styles.card}>
+        <h2>Build Queue Filters</h2>
+        <div className={styles.filterGrid}>
+          <label>
+            Stage
+            <select value={buildStageFilter} onChange={(event) => setBuildStageFilter(event.target.value)}>
+              <option value="all">all</option>
+              {BUILD_STAGE_OPTIONS.map((stage) => (
+                <option key={stage} value={stage}>
+                  {stage}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" onClick={() => void loadBuildList()} disabled={buildLoading}>
+            {buildLoading ? "Refreshing..." : "Refresh Build Queue"}
+          </button>
+        </div>
+        <p className={styles.muted}>Build requests: {buildTotal}</p>
+      </section>
+
+      <section className={styles.grid2}>
+        <div className={styles.card}>
+          <h2>Active Build Intake Queue</h2>
+          <div className={styles.list}>
+            {buildActiveQueue.length === 0 ? <div className={styles.muted}>No active build requests.</div> : null}
+            {buildActiveQueue.map((item) => (
+              <button key={item.id} type="button" className={styles.item} onClick={() => void loadBuildDetail(item.id)}>
+                <div className={styles.itemHeader}>
+                  <strong>{item.goal || "build-request"}</strong>
+                  <span className={`${styles.badge} ${badgeClass(item.stage)}`}>{item.stage}</span>
+                </div>
+                <div className={styles.itemMeta}>
+                  lane {item.requested_model_lane || "-"} · branch {item.branch_name || "-"} · pr {item.pr_number || item.pr_url || "-"}
+                </div>
+                <div className={styles.itemMeta}>{item.scope_summary || "-"}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className={styles.card}>
+          <h2>Recent Build Requests</h2>
+          <div className={styles.list}>
+            {buildRecentQueue.length === 0 ? <div className={styles.muted}>No build requests found.</div> : null}
+            {buildRecentQueue.map((item) => (
+              <button key={`build-recent-${item.id}`} type="button" className={styles.item} onClick={() => void loadBuildDetail(item.id)}>
+                <div className={styles.itemHeader}>
+                  <strong>{formatDateTime(item.updated_at || item.created_at)}</strong>
+                  <span className={`${styles.badge} ${badgeClass(item.stage)}`}>{item.stage}</span>
+                </div>
+                <div className={styles.itemMeta}>{item.goal || "-"}</div>
+                <div className={styles.itemMeta}>router decision: {item.router_decision_id || "-"}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
       <section className={styles.grid2}>
         <div className={styles.card}>
           <h2>Active Review Queue</h2>
@@ -493,6 +909,141 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
             ))}
           </div>
         </div>
+      </section>
+
+      <section className={styles.card}>
+        <h2>Build Execution Detail</h2>
+        {buildDetailLoading ? <div className={styles.muted}>Loading build detail...</div> : null}
+        {buildDetailError ? <div className={styles.error}>{buildDetailError}</div> : null}
+        {!buildDetailLoading && !buildDetail ? <div className={styles.muted}>Select a build request to inspect and advance stages.</div> : null}
+
+        {buildDetail ? (
+          <div className={styles.detailWrap}>
+            <div className={styles.detailGrid}>
+              <div><strong>ID:</strong> {buildDetail.id}</div>
+              <div><strong>Stage:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.stage)}`}>{buildDetail.stage}</span></div>
+              <div><strong>Goal:</strong> {buildDetail.goal || "-"}</div>
+              <div><strong>Lane:</strong> {buildDetail.requested_model_lane || "-"}</div>
+              <div><strong>Branch:</strong> {buildDetail.branch_name || "-"}</div>
+              <div><strong>Router Decision:</strong> {buildDetail.router_decision_id || "-"}</div>
+              <div><strong>PR:</strong> {buildDetail.pr_number || buildDetail.pr_url || "-"}</div>
+              <div><strong>Sensitive:</strong> {buildDetail.sensitive_change ? "true" : "false"}</div>
+              <div><strong>Desired Proof:</strong> {buildDetail.desired_proof || "-"}</div>
+              <div><strong>Scope:</strong> {buildDetail.scope_summary || "-"}</div>
+              <div><strong>Files Summary:</strong> {buildDetail.files_changed_summary || "-"}</div>
+              <div><strong>Test Summary:</strong> {buildDetail.test_summary || "-"}</div>
+              <div><strong>Proof Summary:</strong> {buildDetail.proof_summary || "-"}</div>
+            </div>
+
+            <div className={styles.linkRow}>
+              {buildDetail.branch_name ? (
+                <a href={branchLink(buildDetail.branch_name) || "#"} target="_blank" rel="noreferrer">
+                  Open Build Branch
+                </a>
+              ) : (
+                <span className={styles.muted}>No branch linked yet</span>
+              )}
+              {prLink(buildDetail.pr_url || buildDetail.pr_number) ? (
+                <a href={prLink(buildDetail.pr_url || buildDetail.pr_number) || "#"} target="_blank" rel="noreferrer">
+                  Open Draft PR
+                </a>
+              ) : (
+                <span className={styles.muted}>No PR linked yet</span>
+              )}
+            </div>
+
+            <div className={styles.actionBlock}>
+              <h3>Build Orchestration Actions</h3>
+              <label>
+                Stage/Action Note
+                <textarea rows={3} value={buildStageDetail} onChange={(event) => setBuildStageDetail(event.target.value)} />
+              </label>
+              <label>
+                Branch Name (optional)
+                <input value={buildBranchName} onChange={(event) => setBuildBranchName(event.target.value)} placeholder="build/my-feature-1234abcd" />
+              </label>
+              <div className={styles.actionGrid}>
+                <button type="button" onClick={() => void createBuildBranch()} disabled={Boolean(buildStageUpdating)}>
+                  Create Branch Record
+                </button>
+                <button type="button" onClick={() => void updateBuildStage("implementation_started")} disabled={Boolean(buildStageUpdating)}>
+                  Mark Implementation Started
+                </button>
+                <button type="button" onClick={() => void updateBuildStage("tests_run")} disabled={Boolean(buildStageUpdating)}>
+                  Mark Tests Run
+                </button>
+                <button type="button" onClick={() => void updateBuildStage("verification_requested")} disabled={Boolean(buildStageUpdating)}>
+                  Request Verification
+                </button>
+                <button type="button" onClick={() => void updateBuildStage("approval_pending")} disabled={Boolean(buildStageUpdating)}>
+                  Mark Approval Pending
+                </button>
+                <button type="button" onClick={() => void updateBuildStage("ready_for_merge")} disabled={Boolean(buildStageUpdating)}>
+                  Mark Ready for Merge
+                </button>
+                <button type="button" onClick={() => void updateBuildStage("rejected")} disabled={Boolean(buildStageUpdating)}>
+                  Mark Rejected
+                </button>
+                <button type="button" onClick={() => void updateBuildStage("rerun_requested")} disabled={Boolean(buildStageUpdating)}>
+                  Mark Re-Run Requested
+                </button>
+              </div>
+              {buildStageUpdating ? <div className={styles.muted}>Updating {buildStageUpdating}...</div> : null}
+            </div>
+
+            <div className={styles.actionBlock}>
+              <h3>Router + PR Linkage</h3>
+              <label>
+                Router Decision ID
+                <input value={buildLinkDecisionId} onChange={(event) => setBuildLinkDecisionId(event.target.value)} placeholder="decision-uuid" />
+              </label>
+              <button type="button" onClick={() => void linkBuildToRouterDecision()} disabled={Boolean(buildStageUpdating) || !buildLinkDecisionId.trim()}>
+                Link Router Decision
+              </button>
+
+              <label>
+                PR URL
+                <input value={buildPrUrl} onChange={(event) => setBuildPrUrl(event.target.value)} placeholder="https://github.com/.../pull/123" />
+              </label>
+              <label>
+                PR Number
+                <input value={buildPrNumber} onChange={(event) => setBuildPrNumber(event.target.value)} placeholder="123" />
+              </label>
+              <label>
+                Proof Summary
+                <textarea rows={2} value={buildPrProofSummary} onChange={(event) => setBuildPrProofSummary(event.target.value)} />
+              </label>
+              <label>
+                Test Summary
+                <textarea rows={2} value={buildPrTestSummary} onChange={(event) => setBuildPrTestSummary(event.target.value)} />
+              </label>
+              <label>
+                Files Changed Summary
+                <textarea rows={2} value={buildPrFilesSummary} onChange={(event) => setBuildPrFilesSummary(event.target.value)} />
+              </label>
+              <button type="button" onClick={() => void savePrDraft()} disabled={Boolean(buildStageUpdating) || !buildPrUrl.trim()}>
+                Save PR Draft Metadata
+              </button>
+            </div>
+
+            <div className={styles.timelineBlock}>
+              <h3>Build Intake + Router + Mission Timeline</h3>
+              {buildTimeline.length === 0 ? <div className={styles.muted}>No timeline records yet.</div> : null}
+              {buildTimeline.map((event, index) => (
+                <div key={`${event.at || "no-time"}-${event.event_type}-${index}`} className={styles.timelineItem}>
+                  <div className={styles.timelineMeta}>
+                    <span>{formatDateTime(event.at)}</span>
+                    <span className={`${styles.badge} ${badgeClass(event.status)}`}>{event.status}</span>
+                    <span className={styles.sourceTag}>{event.source}</span>
+                  </div>
+                  <div><strong>{event.event_type}</strong></div>
+                  <div>{event.detail || "-"}</div>
+                  {event.metadata ? <pre>{pretty(event.metadata)}</pre> : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </section>
 
       <section className={styles.card}>

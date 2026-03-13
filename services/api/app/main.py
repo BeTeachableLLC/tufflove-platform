@@ -68,6 +68,16 @@ from app.mission_history_service import (
     get_familyops_mission,
     list_familyops_missions,
 )
+from app.build_intake_service import (
+    create_branch_record,
+    create_build_request,
+    get_build_request,
+    init_build_intake_tables,
+    link_router_decision_to_build_request,
+    list_build_requests,
+    save_pr_draft_metadata,
+    transition_build_stage,
+)
 from app.trigger_service import (
     TRIGGER_TYPES,
     apply_trigger_patch,
@@ -238,6 +248,19 @@ DecisionActionType = Literal[
     "mark_ready_pr_review",
     "mark_ready_merge",
 ]
+BuildStage = Literal[
+    "intake",
+    "routed",
+    "branch_created",
+    "implementation_started",
+    "tests_run",
+    "verification_requested",
+    "pr_drafted",
+    "approval_pending",
+    "ready_for_merge",
+    "rejected",
+    "rerun_requested",
+]
 
 
 class ModelRouterRouteRequest(BaseModel):
@@ -281,6 +304,45 @@ class ModelRouterActionRequest(BaseModel):
     actor: str = "admin"
     note: str = ""
     requested_model: str | None = None
+
+
+class BuildIntakeCreateRequest(BaseModel):
+    tenant_id: str = "familyops"
+    goal: str
+    scope_summary: str = ""
+    constraints_json: dict = Field(default_factory=dict)
+    requested_model_lane: str = "codex"
+    sensitive_change: bool = False
+    desired_proof: str = ""
+    created_by: str = "admin"
+
+
+class BuildBranchCreateRequest(BaseModel):
+    actor: str = "admin"
+    source_branch: str = "main"
+    branch_name: str | None = None
+
+
+class BuildRouteLinkRequest(BaseModel):
+    decision_id: str
+    actor: str = "admin"
+
+
+class BuildStageUpdateRequest(BaseModel):
+    stage: BuildStage
+    actor: str = "admin"
+    detail: str = ""
+    metadata: dict = Field(default_factory=dict)
+
+
+class BuildPrDraftRequest(BaseModel):
+    actor: str = "admin"
+    pr_url: str
+    pr_number: str | None = None
+    proof_summary: str = ""
+    test_summary: str = ""
+    files_changed_summary: str = ""
+    stage: BuildStage = "pr_drafted"
 
 
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
@@ -471,6 +533,7 @@ def startup() -> None:
     init_trigger_tables()
     init_operator_tables()
     init_model_router_tables()
+    init_build_intake_tables()
 
 
 @app.get("/healthz")
@@ -1022,6 +1085,118 @@ def model_router_decision_events_endpoint(decision_id: str, limit: int = 300):
         "decision_id": decision_id,
         "events": list_model_router_decision_events(decision_id, limit=limit),
     }
+
+
+@app.post("/v1/build/intake", dependencies=[Depends(require_admin)])
+def create_build_intake_endpoint(body: BuildIntakeCreateRequest):
+    tenant_id = str(body.tenant_id or "").strip() or "familyops"
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant_bundle["status"] != "active":
+        raise HTTPException(status_code=403, detail="Tenant is not active")
+    if not body.goal.strip():
+        raise HTTPException(status_code=400, detail="goal is required")
+
+    request = create_build_request(
+        tenant_id=tenant_id,
+        goal=body.goal,
+        scope_summary=body.scope_summary,
+        constraints_json=body.constraints_json or {},
+        requested_model_lane=body.requested_model_lane,
+        sensitive_change=body.sensitive_change,
+        desired_proof=body.desired_proof,
+        created_by=body.created_by.strip() or "admin",
+    )
+    return {"ok": True, "request": request}
+
+
+@app.get("/v1/build/intake", dependencies=[Depends(require_admin)])
+def list_build_intake_endpoint(
+    tenant_id: str = "familyops",
+    stage: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    effective_tenant = str(tenant_id or "").strip() or "familyops"
+    tenant_bundle = get_tenant_policy_bundle(effective_tenant)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return list_build_requests(
+        tenant_id=effective_tenant,
+        stage=stage,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/v1/build/intake/{build_request_id}", dependencies=[Depends(require_admin)])
+def get_build_intake_endpoint(build_request_id: str, include_timeline: bool = True):
+    request = get_build_request(build_request_id, include_timeline=include_timeline)
+    if request is None:
+        raise HTTPException(status_code=404, detail="Build request not found")
+    return request
+
+
+@app.post("/v1/build/intake/{build_request_id}/branch", dependencies=[Depends(require_admin)])
+def build_intake_create_branch_endpoint(build_request_id: str, body: BuildBranchCreateRequest):
+    request = create_branch_record(
+        build_request_id,
+        actor=body.actor.strip() or "admin",
+        source_branch=body.source_branch,
+        branch_name=body.branch_name,
+    )
+    if request is None:
+        raise HTTPException(status_code=404, detail="Build request not found")
+    return {"ok": True, "request": request}
+
+
+@app.post("/v1/build/intake/{build_request_id}/route", dependencies=[Depends(require_admin)])
+def build_intake_link_route_endpoint(build_request_id: str, body: BuildRouteLinkRequest):
+    try:
+        request = link_router_decision_to_build_request(
+            build_request_id,
+            decision_id=body.decision_id.strip(),
+            actor=body.actor.strip() or "admin",
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Model router decision not found")
+    if request is None:
+        raise HTTPException(status_code=404, detail="Build request not found")
+    return {"ok": True, "request": request}
+
+
+@app.post("/v1/build/intake/{build_request_id}/stage", dependencies=[Depends(require_admin)])
+def build_intake_stage_endpoint(build_request_id: str, body: BuildStageUpdateRequest):
+    request = transition_build_stage(
+        build_request_id,
+        stage=body.stage,
+        actor=body.actor.strip() or "admin",
+        detail=body.detail,
+        metadata=body.metadata or {},
+    )
+    if request is None:
+        raise HTTPException(status_code=404, detail="Build request not found")
+    return {"ok": True, "request": request}
+
+
+@app.post("/v1/build/intake/{build_request_id}/pr-draft", dependencies=[Depends(require_admin)])
+def build_intake_pr_draft_endpoint(build_request_id: str, body: BuildPrDraftRequest):
+    if not body.pr_url.strip():
+        raise HTTPException(status_code=400, detail="pr_url is required")
+    request = save_pr_draft_metadata(
+        build_request_id,
+        actor=body.actor.strip() or "admin",
+        pr_url=body.pr_url,
+        pr_number=body.pr_number,
+        proof_summary=body.proof_summary,
+        test_summary=body.test_summary,
+        files_changed_summary=body.files_changed_summary,
+        stage=body.stage,
+    )
+    if request is None:
+        raise HTTPException(status_code=404, detail="Build request not found")
+    return {"ok": True, "request": request}
 
 
 @app.get("/v1/ghl/oauth/start")
