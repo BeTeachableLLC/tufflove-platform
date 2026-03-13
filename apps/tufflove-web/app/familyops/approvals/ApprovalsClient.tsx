@@ -1,37 +1,98 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-type TaskListItem = {
-  task_id: string;
-  task_type: string;
+type Subaccount = {
+  id: string;
+  name: string;
   status: string;
-  created_at: string | null;
-  payload?: unknown;
+  ghl_location_id?: string | null;
 };
 
-type Approval = {
-  status?: string;
-  approved_by?: string | null;
-  approved_at?: string | null;
-  note?: string | null;
-} | null;
+type Brand = {
+  id: string;
+  name: string;
+  subaccount_id?: string | null;
+  status: string;
+};
 
-type TaskDetails = {
-  task_id: string;
+type ApprovalItem = {
+  id: string;
   tenant_id: string;
-  user_id: string;
-  task_type: string;
+  subaccount_id: string;
+  subaccount_name: string;
+  subaccount_status: string;
+  subaccount_location_id: string | null;
+  brand_id: string;
+  brand_name: string;
+  brand_status: string;
+  brand_allowed_publishers: string[];
+  platform: string;
   status: string;
-  payload?: unknown;
-  result?: unknown;
-  error?: string | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-  approval?: Approval;
+  title: string;
+  source_task_id: string | null;
+  current_version_id: string | null;
+  current_version_number: number | null;
+  current_content_text: string;
+  current_content_preview: string;
+  scheduled_at: string | null;
+  last_review_action: string | null;
+  last_reviewer: string | null;
+  last_reviewed_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 };
+
+type ApprovalVersion = {
+  id: string;
+  content_item_id: string;
+  version_number: number;
+  content_text: string;
+  generation_note: string;
+  generated_by: string;
+  created_at: string | null;
+};
+
+type ApprovalReview = {
+  id: string;
+  action: string;
+  reviewer: string;
+  note: string | null;
+  created_at: string | null;
+  content_version_id: string | null;
+};
+
+type RegenerationJob = {
+  id: string;
+  status: string;
+  requested_by: string;
+  revision_note: string;
+  attempt_count: number;
+  error: string | null;
+  created_at: string | null;
+  processed_at: string | null;
+};
+
+type ApprovalDetail = ApprovalItem & {
+  versions: ApprovalVersion[];
+  reviews: ApprovalReview[];
+  regeneration_jobs: RegenerationJob[];
+};
+
+type ApprovalsResponse = {
+  items?: ApprovalItem[];
+  subaccounts?: Subaccount[];
+  brands?: Brand[];
+  total?: number;
+};
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
 
 function pretty(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -60,357 +121,441 @@ function normalizeError(payload: unknown, fallback: string): string {
   return fallback;
 }
 
-function payloadRecord(payload: unknown): Record<string, unknown> | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  return payload as Record<string, unknown>;
-}
-
-function taskBrandId(task: TaskListItem | TaskDetails | null): string {
-  const payload = payloadRecord(task?.payload);
-  const value = payload?.brand_id;
-  return typeof value === "string" ? value : "";
-}
-
-function taskLocationId(task: TaskListItem | TaskDetails | null): string {
-  const payload = payloadRecord(task?.payload);
-  const value = payload?.location_id;
-  return typeof value === "string" ? value : "";
-}
-
 export default function FamilyOpsApprovalsPage() {
-  const searchParams = useSearchParams();
-  const [tasks, setTasks] = useState<TaskListItem[]>([]);
-  const [brandFilter, setBrandFilter] = useState<string>("all");
-  const [tasksLoading, setTasksLoading] = useState(false);
-  const [tasksError, setTasksError] = useState<string | null>(null);
+  const [items, setItems] = useState<ApprovalItem[]>([]);
+  const [subaccounts, setSubaccounts] = useState<Subaccount[]>([]);
+  const [brands, setBrands] = useState<Brand[]>([]);
+  const [total, setTotal] = useState(0);
 
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const [details, setDetails] = useState<TaskDetails | null>(null);
-  const [detailsLoading, setDetailsLoading] = useState(false);
-  const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [subaccountFilter, setSubaccountFilter] = useState("all");
+  const [brandFilter, setBrandFilter] = useState("all");
+  const [platformFilter, setPlatformFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useState("");
+
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<ApprovalDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
-  const loadTasks = useCallback(async () => {
-    setTasksLoading(true);
-    setTasksError(null);
+  const loadApprovals = useCallback(async () => {
+    setListLoading(true);
+    setListError(null);
+
+    const params = new URLSearchParams();
+    if (subaccountFilter !== "all") params.set("subaccount_id", subaccountFilter);
+    if (brandFilter !== "all") params.set("brand_id", brandFilter);
+    if (platformFilter !== "all") params.set("platform", platformFilter);
+    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (dateFrom.trim()) params.set("date_from", dateFrom.trim());
+    if (dateTo.trim()) params.set("date_to", dateTo.trim());
+    if (search.trim()) params.set("search", search.trim());
+    params.set("limit", "100");
+
     try {
-      const response = await fetch("/api/familyops/tasks", { cache: "no-store" });
+      const response = await fetch(`/api/familyops/approvals?${params.toString()}`, { cache: "no-store" });
       const payload = await parseResponse(response);
       if (!response.ok) {
-        throw new Error(normalizeError(payload, `Failed to load tasks (${response.status})`));
+        throw new Error(normalizeError(payload, `Failed to load approvals (${response.status})`));
       }
 
-      const records =
-        payload && typeof payload === "object" && Array.isArray((payload as { tasks?: unknown[] }).tasks)
-          ? ((payload as { tasks: TaskListItem[] }).tasks || [])
-          : [];
-      setTasks(records.slice(0, 25));
+      const data = (payload && typeof payload === "object" ? payload : {}) as ApprovalsResponse;
+      setItems(Array.isArray(data.items) ? data.items : []);
+      setSubaccounts(Array.isArray(data.subaccounts) ? data.subaccounts : []);
+      setBrands(Array.isArray(data.brands) ? data.brands : []);
+      setTotal(typeof data.total === "number" ? data.total : 0);
     } catch (error) {
-      setTasksError(error instanceof Error ? error.message : String(error));
-      setTasks([]);
+      setItems([]);
+      setListError(error instanceof Error ? error.message : String(error));
     } finally {
-      setTasksLoading(false);
+      setListLoading(false);
     }
-  }, []);
+  }, [brandFilter, dateFrom, dateTo, platformFilter, search, statusFilter, subaccountFilter]);
 
-  const loadTaskDetails = useCallback(async (taskId: string) => {
-    setDetailsLoading(true);
-    setDetailsError(null);
+  const loadDetail = useCallback(async (contentItemId: string) => {
+    setDetailLoading(true);
+    setDetailError(null);
     setActionError(null);
     try {
-      const response = await fetch(`/api/familyops/task/${encodeURIComponent(taskId)}`, {
+      const response = await fetch(`/api/familyops/approvals/${encodeURIComponent(contentItemId)}`, {
         cache: "no-store",
       });
       const payload = await parseResponse(response);
       if (!response.ok) {
-        throw new Error(normalizeError(payload, `Failed to load task details (${response.status})`));
+        throw new Error(normalizeError(payload, `Failed to load item (${response.status})`));
       }
-      setDetails(payload as TaskDetails);
-      setSelectedTaskId(taskId);
+      setDetail(payload as ApprovalDetail);
+      setSelectedId(contentItemId);
     } catch (error) {
-      setDetailsError(error instanceof Error ? error.message : String(error));
-      setDetails(null);
-      setSelectedTaskId(taskId);
+      setDetail(null);
+      setDetailError(error instanceof Error ? error.message : String(error));
+      setSelectedId(contentItemId);
     } finally {
-      setDetailsLoading(false);
+      setDetailLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadTasks();
-  }, [loadTasks]);
+    void loadApprovals();
+  }, [loadApprovals]);
 
-  const approvalStatus = details?.approval?.status || null;
-  const canDecide =
-    details?.task_type === "ghl.social.publish" &&
-    approvalStatus === "pending" &&
-    !detailsLoading &&
-    !actionLoading;
+  useEffect(() => {
+    if (selectedId) {
+      const stillExists = items.some((item) => item.id === selectedId);
+      if (!stillExists) {
+        setSelectedId(null);
+        setDetail(null);
+      }
+    }
+  }, [items, selectedId]);
 
-  const runDecision = useCallback(
-    async (decision: "approve" | "reject") => {
-      if (!details?.task_id) return;
-      const approvedBy = window.prompt(
-        `${decision === "approve" ? "Approve" : "Reject"} by (required):`,
-        "moe",
-      );
-      if (!approvedBy || !approvedBy.trim()) return;
-      const note = window.prompt("Note (optional):", "") ?? "";
+  useEffect(() => {
+    if (!selectedId && items.length > 0) {
+      void loadDetail(items[0].id);
+    }
+  }, [items, loadDetail, selectedId]);
+
+  const filteredBrands = useMemo(() => {
+    if (subaccountFilter === "all") return brands;
+    return brands.filter((brand) => brand.subaccount_id === subaccountFilter);
+  }, [brands, subaccountFilter]);
+
+  const platformOptions = useMemo(() => {
+    const values = new Set<string>();
+    for (const item of items) {
+      if (item.platform) values.add(item.platform);
+    }
+    return Array.from(values).sort();
+  }, [items]);
+
+  const canReview =
+    !!detail &&
+    !actionLoading &&
+    ["ready_for_review", "revision_requested", "approved", "rejected"].includes(detail.status);
+
+  const runReviewAction = useCallback(
+    async (action: "approve" | "reject" | "request-revision") => {
+      if (!detail?.id) return;
+      const reviewer = window.prompt("Reviewer (required):", "moe");
+      if (!reviewer || !reviewer.trim()) return;
+      const note =
+        window.prompt(
+          action === "request-revision" ? "Revision note (required):" : "Note (optional):",
+          "",
+        ) ?? "";
+      if (action === "request-revision" && !note.trim()) {
+        setActionError("Revision note is required.");
+        return;
+      }
 
       setActionLoading(true);
       setActionError(null);
+      setActionMessage(null);
       try {
-        const response = await fetch(
-          `/api/familyops/task/${encodeURIComponent(details.task_id)}/${decision}`,
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ approved_by: approvedBy.trim(), note }),
-          },
-        );
+        const response = await fetch(`/api/familyops/approvals/${encodeURIComponent(detail.id)}/${action}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reviewer: reviewer.trim(), note }),
+        });
         const payload = await parseResponse(response);
         if (!response.ok) {
-          throw new Error(
-            normalizeError(payload, `${decision} failed (${response.status})`),
-          );
+          throw new Error(normalizeError(payload, `${action} failed (${response.status})`));
         }
-        await Promise.all([loadTasks(), loadTaskDetails(details.task_id)]);
+        if (action === "request-revision") {
+          setActionMessage("Revision requested and regeneration queued.");
+        } else {
+          setActionMessage(`Content ${action}d.`);
+        }
+        await loadApprovals();
+        await loadDetail(detail.id);
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
       } finally {
         setActionLoading(false);
       }
     },
-    [details?.task_id, loadTaskDetails, loadTasks],
+    [detail?.id, loadApprovals, loadDetail],
   );
 
-  const selectedHeader = useMemo(() => {
-    if (!details) return "Select a task";
-    return `${details.task_type} • ${details.task_id}`;
-  }, [details]);
-
-  const brandOptions = useMemo(() => {
-    const brands = new Set<string>();
-    for (const task of tasks) {
-      const brandId = taskBrandId(task);
-      if (brandId) brands.add(brandId);
-    }
-    return Array.from(brands).sort();
-  }, [tasks]);
-
-  const filteredTasks = useMemo(() => {
-    if (brandFilter === "all") return tasks;
-    return tasks.filter((task) => taskBrandId(task) === brandFilter);
-  }, [brandFilter, tasks]);
-
-  useEffect(() => {
-    if (!selectedTaskId && filteredTasks.length > 0) {
-      loadTaskDetails(filteredTasks[0].task_id);
-    }
-  }, [filteredTasks, loadTaskDetails, selectedTaskId]);
-
-  const detailBrandId = taskBrandId(details);
-  const detailLocationId = taskLocationId(details);
-
-  const ghlStatus = searchParams.get("ghl");
-  const ghlMessage = searchParams.get("message");
-  const showSuccess = ghlStatus === "connected";
-  const showWarning = ghlStatus === "error" || ghlStatus === "forbidden";
-
   return (
-    <main style={{ maxWidth: 1240, margin: "0 auto", padding: 24, fontFamily: "sans-serif" }}>
+    <main style={{ maxWidth: 1280, margin: "0 auto", padding: 24, fontFamily: "sans-serif" }}>
       <h1 style={{ fontSize: 30, fontWeight: 700, marginBottom: 6 }}>FamilyOps Approval Center</h1>
-      <p style={{ marginBottom: 20, color: "#9ca3af" }}>
-        Admin view for FamilyOps task approvals. Browser calls Next.js server proxy routes only.
+      <p style={{ color: "#9ca3af", marginBottom: 14 }}>
+        Subaccount-first, brand-aware review queue for content approval and AI revision cycles.
       </p>
-      {showSuccess ? (
-        <div
-          style={{
-            marginBottom: 12,
-            border: "1px solid #14532d",
-            background: "#0b1f13",
-            color: "#bbf7d0",
-            borderRadius: 8,
-            padding: 12,
-            fontWeight: 600,
-          }}
-        >
-          {ghlMessage || "GoHighLevel connected."}
-        </div>
-      ) : null}
-      {showWarning ? (
-        <div
-          style={{
-            marginBottom: 12,
-            border: "1px solid #7f1d1d",
-            background: "#111",
-            color: "#fecaca",
-            borderRadius: 8,
-            padding: 12,
-            fontWeight: 600,
-          }}
-        >
-          {ghlMessage || "GoHighLevel connection failed."}
-        </div>
-      ) : null}
       <p style={{ marginBottom: 16 }}>
-        <Link href="/familyops/ghl" style={{ textDecoration: "underline" }}>
-          FamilyOps GHL
-        </Link>
-        {" · "}
         <Link href="/familyops/brands" style={{ textDecoration: "underline" }}>
           FamilyOps Brands
         </Link>
+        {" · "}
+        <Link href="/familyops/triggers" style={{ textDecoration: "underline" }}>
+          Trigger Service
+        </Link>
       </p>
+
+      <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 14, marginBottom: 16 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Filters</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+          <label>
+            <div style={{ marginBottom: 4 }}>Subaccount</div>
+            <select
+              value={subaccountFilter}
+              onChange={(event) => {
+                setSubaccountFilter(event.target.value);
+                setBrandFilter("all");
+              }}
+              style={{ width: "100%", padding: 8 }}
+            >
+              <option value="all">All Subaccounts</option>
+              {subaccounts.map((subaccount) => (
+                <option key={subaccount.id} value={subaccount.id}>
+                  {subaccount.name} ({subaccount.status})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <div style={{ marginBottom: 4 }}>Brand</div>
+            <select value={brandFilter} onChange={(event) => setBrandFilter(event.target.value)} style={{ width: "100%", padding: 8 }}>
+              <option value="all">All Brands</option>
+              {filteredBrands.map((brand) => (
+                <option key={brand.id} value={brand.id}>
+                  {brand.name} ({brand.status})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <div style={{ marginBottom: 4 }}>Platform</div>
+            <select
+              value={platformFilter}
+              onChange={(event) => setPlatformFilter(event.target.value)}
+              style={{ width: "100%", padding: 8 }}
+            >
+              <option value="all">All Platforms</option>
+              {platformOptions.map((platform) => (
+                <option key={platform} value={platform}>
+                  {platform}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            <div style={{ marginBottom: 4 }}>Status</div>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} style={{ width: "100%", padding: 8 }}>
+              <option value="all">All Statuses</option>
+              <option value="ready_for_review">ready_for_review</option>
+              <option value="approved">approved</option>
+              <option value="rejected">rejected</option>
+              <option value="revision_requested">revision_requested</option>
+              <option value="scheduled">scheduled</option>
+            </select>
+          </label>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr auto", gap: 10, marginTop: 10 }}>
+          <label>
+            <div style={{ marginBottom: 4 }}>Date From (ISO)</div>
+            <input
+              value={dateFrom}
+              onChange={(event) => setDateFrom(event.target.value)}
+              placeholder="2026-03-13T00:00:00Z"
+              style={{ width: "100%", padding: 8 }}
+            />
+          </label>
+          <label>
+            <div style={{ marginBottom: 4 }}>Date To (ISO)</div>
+            <input
+              value={dateTo}
+              onChange={(event) => setDateTo(event.target.value)}
+              placeholder="2026-03-13T23:59:59Z"
+              style={{ width: "100%", padding: 8 }}
+            />
+          </label>
+          <label>
+            <div style={{ marginBottom: 4 }}>Search</div>
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="title, content, brand"
+              style={{ width: "100%", padding: 8 }}
+            />
+          </label>
+          <div style={{ display: "flex", alignItems: "end" }}>
+            <button type="button" onClick={() => void loadApprovals()} disabled={listLoading} style={{ padding: "10px 14px" }}>
+              {listLoading ? "Refreshing..." : "Apply"}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {listError ? <div style={{ color: "#ef4444", fontWeight: 600, marginBottom: 12 }}>{listError}</div> : null}
+      {actionError ? <div style={{ color: "#ef4444", fontWeight: 600, marginBottom: 12 }}>{actionError}</div> : null}
+      {actionMessage ? <div style={{ color: "#22c55e", fontWeight: 600, marginBottom: 12 }}>{actionMessage}</div> : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16 }}>
         <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <h2 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>Latest Tasks (25)</h2>
-            <div style={{ display: "flex", gap: 8 }}>
-              <select
-                value={brandFilter}
-                onChange={(event) => setBrandFilter(event.target.value)}
-                style={{ padding: "8px 10px" }}
-              >
-                <option value="all">All Brands</option>
-                {brandOptions.map((brandId) => (
-                  <option key={brandId} value={brandId}>
-                    {brandId}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={() => loadTasks()}
-                disabled={tasksLoading}
-                style={{ padding: "8px 12px" }}
-              >
-                {tasksLoading ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-          </div>
-          {tasksError ? (
-            <div style={{ marginTop: 12, color: "#ef4444", fontWeight: 600 }}>{tasksError}</div>
-          ) : null}
-          <div style={{ marginTop: 12, overflowX: "auto" }}>
+          <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Approvals ({total})</h2>
+          <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
               <thead>
                 <tr>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>
-                    Task ID
-                  </th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>
-                    Type
-                  </th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>
-                    Brand
-                  </th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>
-                    Location
-                  </th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>
-                    Status
-                  </th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>
-                    Created
-                  </th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>ID</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>Subaccount</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>Brand</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>Platform</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>Status</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #333", padding: "8px 6px" }}>Updated</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredTasks.map((task) => {
-                  const selected = task.task_id === selectedTaskId;
+                {items.map((item) => {
+                  const isSelected = item.id === selectedId;
                   return (
                     <tr
-                      key={task.task_id}
-                      onClick={() => loadTaskDetails(task.task_id)}
+                      key={item.id}
+                      onClick={() => void loadDetail(item.id)}
                       style={{
+                        background: isSelected ? "#111827" : "transparent",
                         cursor: "pointer",
-                        background: selected ? "#111827" : "transparent",
                       }}
                     >
-                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{task.task_id}</td>
-                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{task.task_type}</td>
-                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>
-                        {taskBrandId(task) || "-"}
+                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px", fontFamily: "monospace" }}>
+                        {item.id.slice(0, 8)}…
                       </td>
-                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>
-                        {taskLocationId(task) || "-"}
-                      </td>
-                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{task.status}</td>
-                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>
-                        {task.created_at || "-"}
-                      </td>
+                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{item.subaccount_name}</td>
+                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{item.brand_name}</td>
+                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{item.platform}</td>
+                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{item.status}</td>
+                      <td style={{ borderBottom: "1px solid #222", padding: "8px 6px" }}>{formatDateTime(item.updated_at)}</td>
                     </tr>
                   );
                 })}
+                {items.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} style={{ padding: 14, color: "#9ca3af" }}>
+                      No approval items found.
+                    </td>
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           </div>
         </section>
 
         <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 14 }}>
-          <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>{selectedHeader}</h2>
-          {detailsLoading ? <div>Loading details...</div> : null}
-          {detailsError ? <div style={{ color: "#ef4444", fontWeight: 600 }}>{detailsError}</div> : null}
-          {actionError ? <div style={{ color: "#ef4444", fontWeight: 600 }}>{actionError}</div> : null}
+          <h2 style={{ fontSize: 20, fontWeight: 600, marginTop: 0 }}>Detail</h2>
+          {detailLoading ? <div>Loading...</div> : null}
+          {detailError ? <div style={{ color: "#ef4444", fontWeight: 600 }}>{detailError}</div> : null}
+          {!detailLoading && !detailError && !detail ? <div>Select an item to inspect.</div> : null}
+          {!detailLoading && detail ? (
+            <div style={{ display: "grid", gap: 10 }}>
+              <div>
+                <strong>ID:</strong> <span style={{ fontFamily: "monospace" }}>{detail.id}</span>
+              </div>
+              <div>
+                <strong>Subaccount:</strong> {detail.subaccount_name} ({detail.subaccount_status})
+              </div>
+              <div>
+                <strong>Brand:</strong> {detail.brand_name} ({detail.brand_status})
+              </div>
+              <div>
+                <strong>Status:</strong> {detail.status}
+              </div>
+              <div>
+                <strong>Current Version:</strong> {detail.current_version_number ?? "-"}
+              </div>
+              <div>
+                <strong>Title:</strong> {detail.title || "-"}
+              </div>
 
-          {details ? (
-            <>
-              <div style={{ marginBottom: 8 }}>
-                <strong>Status:</strong> {details.status}
-              </div>
-              <div style={{ marginBottom: 8 }}>
-                <strong>Approval:</strong> {details.approval?.status || "n/a"}
-              </div>
-              <div style={{ marginBottom: 8 }}>
-                <strong>Brand:</strong> {detailBrandId || "-"}
-              </div>
-              <div style={{ marginBottom: 8 }}>
-                <strong>Location:</strong> {detailLocationId || "-"}
-              </div>
-              {details.approval?.approved_by ? (
-                <div style={{ marginBottom: 8 }}>
-                  <strong>Approved By:</strong> {details.approval.approved_by}
+              <label>
+                <div style={{ marginBottom: 4 }}>
+                  <strong>Current Content</strong>
                 </div>
-              ) : null}
-              {details.approval?.note ? (
-                <div style={{ marginBottom: 8 }}>
-                  <strong>Note:</strong> {details.approval.note}
-                </div>
-              ) : null}
+                <textarea readOnly rows={8} style={{ width: "100%", padding: 8 }} value={detail.current_content_text || ""} />
+              </label>
 
-              {canDecide ? (
-                <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-                  <button type="button" onClick={() => runDecision("approve")} style={{ padding: "8px 12px" }}>
-                    Approve
-                  </button>
-                  <button type="button" onClick={() => runDecision("reject")} style={{ padding: "8px 12px" }}>
-                    Reject
-                  </button>
-                </div>
-              ) : null}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button type="button" disabled={!canReview} onClick={() => void runReviewAction("approve")} style={{ padding: "8px 12px" }}>
+                  {actionLoading ? "Working..." : "Approve"}
+                </button>
+                <button type="button" disabled={!canReview} onClick={() => void runReviewAction("reject")} style={{ padding: "8px 12px" }}>
+                  {actionLoading ? "Working..." : "Reject"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!canReview}
+                  onClick={() => void runReviewAction("request-revision")}
+                  style={{ padding: "8px 12px" }}
+                >
+                  {actionLoading ? "Working..." : "Request Revision"}
+                </button>
+              </div>
 
-              <details open>
-                <summary style={{ cursor: "pointer" }}>Payload</summary>
-                <pre style={{ background: "#111", padding: 10, borderRadius: 6, overflowX: "auto" }}>
-                  {pretty(details.payload)}
-                </pre>
+              <details>
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>Version History ({detail.versions.length})</summary>
+                <div style={{ marginTop: 8, maxHeight: 240, overflowY: "auto" }}>
+                  {detail.versions.map((version) => (
+                    <div key={version.id} style={{ borderBottom: "1px solid #222", padding: "8px 0" }}>
+                      <div>
+                        <strong>v{version.version_number}</strong> by {version.generated_by} at {formatDateTime(version.created_at)}
+                      </div>
+                      <div style={{ color: "#9ca3af" }}>{version.generation_note || "-"}</div>
+                      <pre style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{version.content_text}</pre>
+                    </div>
+                  ))}
+                </div>
               </details>
-              <details style={{ marginTop: 10 }} open>
-                <summary style={{ cursor: "pointer" }}>Result</summary>
-                <pre style={{ background: "#111", padding: 10, borderRadius: 6, overflowX: "auto" }}>
-                  {pretty(details.result)}
-                </pre>
+
+              <details>
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>Review History ({detail.reviews.length})</summary>
+                <div style={{ marginTop: 8, maxHeight: 220, overflowY: "auto" }}>
+                  {detail.reviews.map((review) => (
+                    <div key={review.id} style={{ borderBottom: "1px solid #222", padding: "8px 0" }}>
+                      <div>
+                        <strong>{review.action}</strong> by {review.reviewer} at {formatDateTime(review.created_at)}
+                      </div>
+                      <div>{review.note || "-"}</div>
+                    </div>
+                  ))}
+                </div>
               </details>
-              <details style={{ marginTop: 10 }} open>
-                <summary style={{ cursor: "pointer" }}>Error</summary>
-                <pre style={{ background: "#111", padding: 10, borderRadius: 6, overflowX: "auto" }}>
-                  {pretty(details.error)}
-                </pre>
+
+              <details>
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+                  Regeneration Jobs ({detail.regeneration_jobs.length})
+                </summary>
+                <div style={{ marginTop: 8, maxHeight: 180, overflowY: "auto" }}>
+                  {detail.regeneration_jobs.map((job) => (
+                    <div key={job.id} style={{ borderBottom: "1px solid #222", padding: "8px 0" }}>
+                      <div>
+                        <strong>{job.status}</strong> by {job.requested_by} at {formatDateTime(job.created_at)}
+                      </div>
+                      <div>Note: {job.revision_note || "-"}</div>
+                      {job.error ? <div style={{ color: "#ef4444" }}>Error: {job.error}</div> : null}
+                    </div>
+                  ))}
+                </div>
               </details>
-            </>
+
+              <details>
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>Raw JSON</summary>
+                <pre style={{ whiteSpace: "pre-wrap" }}>{pretty(detail)}</pre>
+              </details>
+            </div>
           ) : null}
         </section>
       </div>

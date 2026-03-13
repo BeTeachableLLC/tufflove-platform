@@ -12,7 +12,7 @@ from app.tasks import AsyncTask
 
 TASK_ALLOWLIST_BY_TENANT = {
     "tufflove": ["embed.ingest"],
-    "familyops": ["ghl.social.plan", "ghl.social.schedule", "ghl.social.publish", "embed.ingest"],
+    "familyops": ["ghl.social.plan", "ghl.social.schedule", "ghl.social.publish", "embed.ingest", "content.ai.regenerate"],
     "corent": [],
 }
 
@@ -33,6 +33,7 @@ TASK_REQUIRED_TOOLS = {
     "ghl.social.plan": ("ghl.read",),
     "ghl.social.schedule": ("ghl.write",),
     "ghl.social.publish": ("ghl.write",),
+    "content.ai.regenerate": ("db.write",),
 }
 
 

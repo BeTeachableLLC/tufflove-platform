@@ -33,6 +33,28 @@ from app.db import (
 )
 from app.queue import enqueue
 from app.tasks import AsyncTask
+from app.operator_service import (
+    activate_operator_version,
+    create_operator_version,
+    get_operator_mission,
+    get_operator_version,
+    init_operator_tables,
+    list_operator_versions,
+    list_operators,
+    run_operator_version,
+    update_operator_version,
+)
+from app.brand_approval_service import (
+    approve_content_item,
+    create_content_item_for_publish_task,
+    get_approval_item as get_content_approval_item,
+    init_brand_approval_tables,
+    list_approval_items,
+    list_brands_with_subaccounts,
+    list_subaccounts,
+    reject_content_item,
+    request_content_revision,
+)
 from app.trigger_service import (
     TRIGGER_TYPES,
     apply_trigger_patch,
@@ -87,6 +109,11 @@ class AdminApprovalRequest(BaseModel):
     note: str = ""
 
 
+class ContentReviewRequest(BaseModel):
+    reviewer: str
+    note: str = ""
+
+
 class AdminIngestRequest(BaseModel):
     source_root: str
     extensions: list[str] = Field(default_factory=lambda: [".md", ".txt", ".mp3", ".pdf", ".docx"])
@@ -138,10 +165,57 @@ class TriggerPatchRequest(BaseModel):
     dedupe_window_seconds: int | None = Field(default=None, ge=1, le=86400)
 
 
+VersionStatus = Literal["draft", "validated", "active", "archived"]
+ValidationStatus = Literal["pending", "passed", "failed"]
+
+
+class OperatorVersionCreateRequest(BaseModel):
+    tenant_id: str
+    operator_id: str
+    version_label: str | None = None
+    status: VersionStatus = "draft"
+    goal: str = ""
+    instruction_json: dict = Field(default_factory=dict)
+    tool_manifest: list[str] = Field(default_factory=list)
+    validation_summary: str = ""
+    validation_status: ValidationStatus = "pending"
+    created_by: str = "admin"
+
+
+class OperatorVersionPatchRequest(BaseModel):
+    version_label: str | None = None
+    status: VersionStatus | None = None
+    goal: str | None = None
+    instruction_json: dict | None = None
+    tool_manifest: list[str] | None = None
+    validation_summary: str | None = None
+    validation_status: ValidationStatus | None = None
+    updated_by: str = "admin"
+
+
+class OperatorVersionActivateRequest(BaseModel):
+    activated_by: str = "admin"
+
+
+class OperatorRunRequest(BaseModel):
+    tenant_id: str
+    user_id: str
+    operator_version_id: str
+    input_payload: dict = Field(default_factory=dict)
+
+
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
 def tool_db_write(payload): return {"ok": True, "data": "db.write stub", "payload": payload}
 def tool_ghl_read(payload): return {"ok": True, "data": "ghl.read stub", "payload": payload}
 def tool_ghl_write(payload): return {"ok": True, "data": "ghl.write stub", "payload": payload}
+
+
+RUNNER_TOOL_IMPLS = {
+    "db.read": tool_db_read,
+    "db.write": tool_db_write,
+    "ghl.read": tool_ghl_read,
+    "ghl.write": tool_ghl_write,
+}
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -158,7 +232,7 @@ TOOLS = build_tool_registry()
 
 TASK_ALLOWLIST_BY_TENANT = {
     "tufflove": ["embed.ingest"],
-    "familyops": ["ghl.social.plan", "ghl.social.schedule", "ghl.social.publish", "embed.ingest"],
+    "familyops": ["ghl.social.plan", "ghl.social.schedule", "ghl.social.publish", "embed.ingest", "content.ai.regenerate"],
     "corent": [],
 }
 
@@ -192,6 +266,21 @@ def required_env(name: str) -> str:
     if not value:
         raise HTTPException(status_code=500, detail=f"{name} is not configured")
     return value
+
+
+def parse_iso_datetime(value: str | None, field_name: str) -> datetime | None:
+    if value is None:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}; expected ISO-8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def build_runtime_for_tenant(tenant_bundle: dict) -> ZeroClawRuntime:
@@ -299,7 +388,9 @@ def generate_ai_answer(
 def startup() -> None:
     init_db()
     seed_defaults()
+    init_brand_approval_tables()
     init_trigger_tables()
+    init_operator_tables()
 
 
 @app.get("/healthz")
@@ -376,11 +467,29 @@ def enqueue_task_internal(*, tenant_id: str, user_id: str, task_type: str, paylo
     _validate_task_enqueue_request(tenant_id=tenant_id, task_type=task_type, payload=payload or {})
 
     task_id = str(uuid4())
+    normalized_payload = dict(payload or {})
+
+    if tenant_id == "familyops" and task_type == "ghl.social.publish":
+        content_item_id = str(normalized_payload.get("content_item_id") or "").strip()
+        if not content_item_id:
+            try:
+                content_item = create_content_item_for_publish_task(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    source_task_id=task_id,
+                    payload=normalized_payload,
+                )
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            normalized_payload["content_item_id"] = content_item["id"]
+
     task = AsyncTask(
         tenant_id=tenant_id,
         user_id=user_id,
         task_type=task_type,
-        payload=payload or {},
+        payload=normalized_payload,
         task_id=task_id,
     )
     upsert_task_log(
@@ -389,7 +498,7 @@ def enqueue_task_internal(*, tenant_id: str, user_id: str, task_type: str, paylo
         user_id=user_id,
         task_type=task_type,
         status="queued",
-        payload=payload or {},
+        payload=normalized_payload,
     )
     approval_required = tenant_id == "familyops" and task_type == "ghl.social.publish"
     if approval_required:
@@ -397,6 +506,100 @@ def enqueue_task_internal(*, tenant_id: str, user_id: str, task_type: str, paylo
 
     enqueue(task.model_dump(mode="json"))
     return {"ok": True, "task_id": task_id, "approval_required": approval_required}
+
+
+def _require_active_familyops_tenant() -> None:
+    tenant_bundle = get_tenant_policy_bundle("familyops")
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant_bundle["status"] != "active":
+        raise HTTPException(status_code=403, detail="Tenant is not active")
+
+
+def _require_familyops_content_item(content_item_id: str) -> dict:
+    item = get_content_approval_item(content_item_id)
+    if item is None or item.get("tenant_id") != "familyops":
+        raise HTTPException(status_code=404, detail="Approval item not found")
+    return item
+
+
+@app.get("/v1/familyops/approvals", dependencies=[Depends(require_admin)])
+def familyops_list_approvals(
+    subaccount_id: str | None = None,
+    brand_id: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    _require_active_familyops_tenant()
+    items = list_approval_items(
+        tenant_id="familyops",
+        subaccount_id=subaccount_id,
+        brand_id=brand_id,
+        platform=platform,
+        status=status,
+        date_from=parse_iso_datetime(date_from, "date_from"),
+        date_to=parse_iso_datetime(date_to, "date_to"),
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    items["subaccounts"] = list_subaccounts("familyops")
+    items["brands"] = list_brands_with_subaccounts("familyops")
+    return items
+
+
+@app.get("/v1/familyops/approvals/{content_item_id}", dependencies=[Depends(require_admin)])
+def familyops_get_approval(content_item_id: str):
+    _require_active_familyops_tenant()
+    return _require_familyops_content_item(content_item_id)
+
+
+@app.post("/v1/familyops/approvals/{content_item_id}/approve", dependencies=[Depends(require_admin)])
+def familyops_approve_content(content_item_id: str, body: ContentReviewRequest):
+    _require_active_familyops_tenant()
+    _require_familyops_content_item(content_item_id)
+    reviewer = body.reviewer.strip()
+    if not reviewer:
+        raise HTTPException(status_code=400, detail="reviewer is required")
+    item = approve_content_item(content_item_id=content_item_id, reviewer=reviewer, note=body.note)
+    return {"ok": True, "item": item}
+
+
+@app.post("/v1/familyops/approvals/{content_item_id}/reject", dependencies=[Depends(require_admin)])
+def familyops_reject_content(content_item_id: str, body: ContentReviewRequest):
+    _require_active_familyops_tenant()
+    _require_familyops_content_item(content_item_id)
+    reviewer = body.reviewer.strip()
+    if not reviewer:
+        raise HTTPException(status_code=400, detail="reviewer is required")
+    item = reject_content_item(content_item_id=content_item_id, reviewer=reviewer, note=body.note)
+    return {"ok": True, "item": item}
+
+
+@app.post("/v1/familyops/approvals/{content_item_id}/request-revision", dependencies=[Depends(require_admin)])
+def familyops_request_revision(content_item_id: str, body: ContentReviewRequest):
+    _require_active_familyops_tenant()
+    _require_familyops_content_item(content_item_id)
+    reviewer = body.reviewer.strip()
+    if not reviewer:
+        raise HTTPException(status_code=400, detail="reviewer is required")
+    revision = request_content_revision(content_item_id=content_item_id, reviewer=reviewer, note=body.note)
+    regen_task = enqueue_task_internal(
+        tenant_id="familyops",
+        user_id=reviewer,
+        task_type="content.ai.regenerate",
+        payload={
+            "content_item_id": content_item_id,
+            "regeneration_job_id": revision["job"]["id"],
+            "note": body.note,
+        },
+    )
+    return {"ok": True, "item": revision["item"], "job": revision["job"], "regeneration_task": regen_task}
 
 
 @app.post("/v1/trigger/register", dependencies=[Depends(require_admin)])
@@ -489,6 +692,113 @@ def patch_trigger_endpoint(trigger_id: str, body: TriggerPatchRequest):
     if updated is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
     return {"ok": True, "trigger": updated}
+
+
+@app.post("/v1/operator/version", dependencies=[Depends(require_admin)])
+def create_operator_version_endpoint(body: OperatorVersionCreateRequest):
+    tenant_bundle = get_tenant_policy_bundle(body.tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant_bundle["status"] != "active":
+        raise HTTPException(status_code=403, detail="Tenant is not active")
+
+    version = create_operator_version(
+        tenant_id=body.tenant_id,
+        operator_id=body.operator_id.strip(),
+        version_label=body.version_label.strip() if body.version_label else None,
+        status=body.status,
+        goal=body.goal,
+        instruction_json=body.instruction_json or {},
+        tool_manifest=body.tool_manifest or [],
+        validation_summary=body.validation_summary,
+        validation_status=body.validation_status,
+        created_by=body.created_by.strip() or "admin",
+    )
+    return {"ok": True, "version": version}
+
+
+@app.get("/v1/operator/operators/{tenant_id}", dependencies=[Depends(require_admin)])
+def list_operators_endpoint(tenant_id: str):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"tenant_id": tenant_id, "operators": list_operators(tenant_id)}
+
+
+@app.get("/v1/operator/versions", dependencies=[Depends(require_admin)])
+def list_operator_versions_endpoint(tenant_id: str, operator_id: str):
+    tenant_bundle = get_tenant_policy_bundle(tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if not operator_id.strip():
+        raise HTTPException(status_code=400, detail="operator_id is required")
+    versions = list_operator_versions(tenant_id, operator_id.strip())
+    return {"tenant_id": tenant_id, "operator_id": operator_id.strip(), "versions": versions}
+
+
+@app.get("/v1/operator/version/{version_id}", dependencies=[Depends(require_admin)])
+def get_operator_version_endpoint(version_id: str):
+    version = get_operator_version(version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Operator version not found")
+    return version
+
+
+@app.patch("/v1/operator/version/{version_id}", dependencies=[Depends(require_admin)])
+def patch_operator_version_endpoint(version_id: str, body: OperatorVersionPatchRequest):
+    patch = body.model_dump(exclude_unset=True)
+    updated_by = str(patch.pop("updated_by", body.updated_by)).strip() or "admin"
+    if not patch:
+        version = get_operator_version(version_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="Operator version not found")
+        return {"ok": True, "version": version}
+
+    updated = update_operator_version(version_id, patch, updated_by=updated_by)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Operator version not found")
+    return {"ok": True, "version": updated}
+
+
+@app.post("/v1/operator/version/{version_id}/activate", dependencies=[Depends(require_admin)])
+def activate_operator_version_endpoint(version_id: str, body: OperatorVersionActivateRequest):
+    try:
+        version = activate_operator_version(version_id, activated_by=body.activated_by.strip() or "admin")
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Operator version not found")
+    return {"ok": True, "version": version}
+
+
+@app.post("/v1/operator/run", dependencies=[Depends(require_admin)])
+def run_operator_by_version_endpoint(body: OperatorRunRequest):
+    tenant_bundle = get_tenant_policy_bundle(body.tenant_id)
+    if tenant_bundle is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant_bundle["status"] != "active":
+        raise HTTPException(status_code=403, detail="Tenant is not active")
+
+    try:
+        mission = run_operator_version(
+            tenant_id=body.tenant_id,
+            user_id=body.user_id.strip() or "operator-runner",
+            operator_version_id=body.operator_version_id.strip(),
+            input_payload=body.input_payload or {},
+            tenant_tool_allowlist=tenant_bundle["tool_allowlist"],
+            tool_impls=RUNNER_TOOL_IMPLS,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Operator version not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "mission": mission}
+
+
+@app.get("/v1/operator/mission/{mission_id}", dependencies=[Depends(require_admin)])
+def get_operator_mission_endpoint(mission_id: str):
+    mission = get_operator_mission(mission_id)
+    if mission is None:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    return mission
 
 
 @app.get("/v1/ghl/oauth/start")
