@@ -1,33 +1,29 @@
-# TUFF LOVE ZeroClaw Platform (Starter)
+# TUFF LOVE Platform
 
-Primary runbook: `docs/runbook.md`
+TUFF LOVE Business Assistant platform monorepo.
 
-One governed agent spine powering:
-- tufflove.us
-- corent.ai
-- family ops (GHL social automation)
+## Source of Truth
+- Canonical source: `https://github.com/BeTeachableLLC/tufflove-platform` on `main`
+- Local clones are development/admin access workspaces only, not runtime source of truth.
 
-Run local:
-- docker compose up -d
-- cd services/api
-- python3 -m venv .venv
-- source .venv/bin/activate
-- python -m pip install --upgrade pip
-- python -m pip install -r requirements.txt
-- python -m uvicorn app.main:app --reload --reload-dir app --reload-exclude '.venv/*' --port 8080
+## Runbooks
+- Local dev + validation: `docs/runbook.md`
+- Server-first production operations: `docs/server-first-runbook.md`
+- Backup + restore: `docs/backup-restore.md`
 
-Frontend:
-- `cd apps/tufflove-web && npm run dev`
-- Production flow page: `http://localhost:3000/agent`
-- Debug page: `http://localhost:3000/agent-test`
+## Production stack artifact
+- `docker-compose.production.yml` defines server runtime ownership for:
+  - web
+  - api
+  - worker API
+  - worker-runner queue processor
+  - trigger-scheduler
+  - postgres
+  - redis
 
-Worker guardrail:
-- `services/worker` now requires `x-worker-token` when `WORKER_ADMIN_TOKEN` is set.
-- Docker compose sets `WORKER_ADMIN_TOKEN` from `.env` (fallback `change_me_worker`).
-
-Knowledge ingest (admin):
-- Queue ingest for tenant:
-  - `POST /v1/admin/tenant/{tenant_id}/ingest` with `x-admin-token`
-  - body: `{"source_root":"assets/tuff-love-book","extensions":[".md",".txt",".pdf",".docx"],"max_files":200}`
-- Process queued jobs:
-  - `POST /v1/worker/run_once` with header `x-worker-token`
+## Quick local startup
+```bash
+docker compose up -d postgres redis api worker
+cd apps/tufflove-web
+npm run dev
+```

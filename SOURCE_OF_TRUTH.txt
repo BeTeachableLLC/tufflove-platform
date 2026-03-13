@@ -1,1 +1,2 @@
-SOURCE OF TRUTH: /Users/moemathews/Desktop/Social Media Admin/tufflove-platform
+SOURCE OF TRUTH: https://github.com/BeTeachableLLC/tufflove-platform (branch: main)
+RUNTIME OWNER: Server deployment from this repository (not any individual laptop clone)
