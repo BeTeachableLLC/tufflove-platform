@@ -156,6 +156,12 @@ type BuildRequest = {
   latest_execution_run_id: string | null;
   failure_note: string;
   rollback_note: string;
+  github_repo: string;
+  github_head_ref: string;
+  github_base_ref: string;
+  github_writeback_status: string;
+  github_writeback_error: string;
+  github_last_writeback_at: string | null;
   created_at: string | null;
   updated_at: string | null;
   branches?: BuildBranchRecord[];
@@ -351,6 +357,12 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
   const [verificationDetail, setVerificationDetail] = useState("");
   const [githubRepoOverride, setGithubRepoOverride] = useState("");
   const [githubPrOverride, setGithubPrOverride] = useState("");
+  const [githubWritebackRepo, setGithubWritebackRepo] = useState("");
+  const [githubWritebackHead, setGithubWritebackHead] = useState("");
+  const [githubWritebackBase, setGithubWritebackBase] = useState("main");
+  const [githubWritebackTitle, setGithubWritebackTitle] = useState("");
+  const [githubWritebackBody, setGithubWritebackBody] = useState("");
+  const [githubWritebackDraft, setGithubWritebackDraft] = useState(true);
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -433,6 +445,12 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       setVerificationState((data.verification_state as BuildVerificationState) || "pending");
       setGithubRepoOverride(data.github_sync?.repo || "");
       setGithubPrOverride(data.github_sync?.pr_number || data.pr_number || "");
+      setGithubWritebackRepo(data.github_repo || data.github_sync?.repo || "");
+      setGithubWritebackHead(data.github_head_ref || data.branch_name || "");
+      setGithubWritebackBase(data.github_base_ref || data.github_sync?.base_ref || "main");
+      setGithubWritebackTitle(data.goal ? `build: ${data.goal}` : "");
+      setGithubWritebackBody("");
+      setGithubWritebackDraft(true);
     } catch (loadError) {
       setBuildDetail(null);
       setSelectedBuildId(id);
@@ -848,6 +866,38 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
     }
   }
 
+  async function writebackGithubDraftPr() {
+    if (!buildDetail) return;
+    setBuildStageUpdating("pr_drafted");
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/familyops/build-intake/${encodeURIComponent(buildDetail.id)}/github-writeback`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actor: createdBy,
+          repo: githubWritebackRepo.trim() || null,
+          head_branch: githubWritebackHead.trim() || null,
+          base_branch: githubWritebackBase.trim() || null,
+          title: githubWritebackTitle.trim() || null,
+          body: githubWritebackBody.trim() || null,
+          draft: githubWritebackDraft,
+        }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed GitHub draft PR writeback (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      await loadBuildList();
+      await loadBuildDetail(buildDetail.id);
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBuildStageUpdating(null);
+    }
+  }
+
   const activeQueue = useMemo(
     () => items.filter((item) => ACTIVE_STATES.has(item.review_state)),
     [items],
@@ -1195,6 +1245,11 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
               <div><strong>Proof Summary:</strong> {buildDetail.proof_summary || "-"}</div>
               <div><strong>Failure Note:</strong> {buildDetail.failure_note || "-"}</div>
               <div><strong>Rollback Note:</strong> {buildDetail.rollback_note || "-"}</div>
+              <div><strong>Writeback Status:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.github_writeback_status || "unknown")}`}>{buildDetail.github_writeback_status || "-"}</span></div>
+              <div><strong>Last Writeback:</strong> {formatDateTime(buildDetail.github_last_writeback_at)}</div>
+              <div><strong>Writeback Repo:</strong> {buildDetail.github_repo || "-"}</div>
+              <div><strong>Writeback Head/Base:</strong> {buildDetail.github_head_ref || "-"} → {buildDetail.github_base_ref || "-"}</div>
+              <div><strong>Writeback Error:</strong> {buildDetail.github_writeback_error || "-"}</div>
             </div>
 
             <div className={styles.linkRow}>
@@ -1404,6 +1459,50 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
               <button type="button" onClick={() => void savePrDraft()} disabled={Boolean(buildStageUpdating) || !buildPrUrl.trim()}>
                 Save PR Draft Metadata
               </button>
+            </div>
+
+            <div className={styles.actionBlock}>
+              <h3>GitHub Draft PR Writeback</h3>
+              <label>
+                Repo
+                <input value={githubWritebackRepo} onChange={(event) => setGithubWritebackRepo(event.target.value)} placeholder="BeTeachableLLC/tufflove-platform" />
+              </label>
+              <label>
+                Head Branch
+                <input value={githubWritebackHead} onChange={(event) => setGithubWritebackHead(event.target.value)} placeholder="build/my-feature-1234abcd" />
+              </label>
+              <label>
+                Base Branch
+                <input value={githubWritebackBase} onChange={(event) => setGithubWritebackBase(event.target.value)} placeholder="main" />
+              </label>
+              <label>
+                PR Title (optional)
+                <input value={githubWritebackTitle} onChange={(event) => setGithubWritebackTitle(event.target.value)} placeholder="build: implement feature slice" />
+              </label>
+              <label>
+                PR Body Override (optional)
+                <textarea rows={5} value={githubWritebackBody} onChange={(event) => setGithubWritebackBody(event.target.value)} />
+              </label>
+              <label className={styles.checkboxLabel}>
+                <input type="checkbox" checked={githubWritebackDraft} onChange={(event) => setGithubWritebackDraft(event.target.checked)} />
+                Draft PR
+              </label>
+              <button
+                type="button"
+                onClick={() => void writebackGithubDraftPr()}
+                disabled={Boolean(buildStageUpdating) || !githubWritebackRepo.trim() || !githubWritebackHead.trim()}
+              >
+                Create/Update Draft PR in GitHub
+              </button>
+              {!buildDetail.github_sync ? (
+                <div className={styles.muted}>Live GitHub state not synced yet.</div>
+              ) : buildDetail.github_sync_drift?.has_drift ? (
+                <div className={styles.muted}>
+                  Local metadata does not match live GitHub state.
+                </div>
+              ) : (
+                <div className={styles.muted}>Local metadata matches live GitHub state.</div>
+              )}
             </div>
 
             <div className={styles.actionBlock}>
