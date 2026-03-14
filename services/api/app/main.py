@@ -78,6 +78,7 @@ from app.build_intake_service import (
     list_build_requests,
     save_pr_draft_metadata,
     set_build_verification_state,
+    sync_build_request_github_status,
     start_build_execution_run,
     transition_build_stage,
 )
@@ -382,6 +383,12 @@ class BuildVerificationRequest(BaseModel):
     verification_state: BuildVerificationState = "pending"
     detail: str = ""
     verification_required: bool | None = None
+
+
+class BuildGithubSyncRequest(BaseModel):
+    actor: str = "admin"
+    repo: str | None = None
+    pr_number: str | None = None
 
 
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
@@ -1293,6 +1300,22 @@ def build_intake_verification_endpoint(build_request_id: str, body: BuildVerific
         detail=body.detail,
         verification_required=body.verification_required,
     )
+    if request is None:
+        raise HTTPException(status_code=404, detail="Build request not found")
+    return {"ok": True, "request": request}
+
+
+@app.post("/v1/build/intake/{build_request_id}/github-sync", dependencies=[Depends(require_admin)])
+def build_intake_github_sync_endpoint(build_request_id: str, body: BuildGithubSyncRequest):
+    try:
+        request = sync_build_request_github_status(
+            build_request_id,
+            actor=body.actor.strip() or "admin",
+            repo=body.repo,
+            pr_number=body.pr_number,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     if request is None:
         raise HTTPException(status_code=404, detail="Build request not found")
     return {"ok": True, "request": request}

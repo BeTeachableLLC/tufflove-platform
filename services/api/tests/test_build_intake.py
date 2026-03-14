@@ -201,6 +201,27 @@ class BuildIntakeEndpointTests(unittest.TestCase):
         _, kwargs = mock_verification.call_args
         self.assertEqual(kwargs["verification_state"], "passed")
 
+    def test_github_sync_endpoint(self):
+        with patch(
+            "app.main.sync_build_request_github_status",
+            return_value={
+                "id": "build-1",
+                "stage": "ready_for_merge",
+                "recommendation": "ready_for_merge",
+                "github_sync": {"pr_number": "22", "checks_status": "passing", "review_status": "approved"},
+            },
+        ) as mock_sync:
+            response = main.build_intake_github_sync_endpoint(
+                "build-1",
+                main.BuildGithubSyncRequest(actor="moe", repo="BeTeachableLLC/tufflove-platform", pr_number="22"),
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["request"]["recommendation"], "ready_for_merge")
+        _, kwargs = mock_sync.call_args
+        self.assertEqual(kwargs["repo"], "BeTeachableLLC/tufflove-platform")
+        self.assertEqual(kwargs["pr_number"], "22")
+
 
 class BuildIntakeRecommendationTests(unittest.TestCase):
     def test_compute_recommendation_requires_execution_when_proof_unknown(self):
@@ -251,6 +272,37 @@ class BuildIntakeRecommendationTests(unittest.TestCase):
         self.assertNotIn("mysecret", sanitized)
         self.assertIn("[REDACTED]", sanitized)
 
+    def test_github_merge_readiness_ready_for_merge_when_all_conditions_pass(self):
+        result = build_intake_service.evaluate_github_merge_readiness(
+            proof_status="passed",
+            verification_state="passed",
+            verification_required=True,
+            github_sync={
+                "pr_state": "open",
+                "mergeability_summary": "CLEAN",
+                "checks_status": "passing",
+                "review_status": "approved",
+            },
+        )
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["stage"], "ready_for_merge")
+
+    def test_github_merge_readiness_blocks_when_checks_or_reviews_fail(self):
+        result = build_intake_service.evaluate_github_merge_readiness(
+            proof_status="passed",
+            verification_state="passed",
+            verification_required=True,
+            github_sync={
+                "pr_state": "open",
+                "mergeability_summary": "CLEAN",
+                "checks_status": "failing",
+                "review_status": "changes_requested",
+            },
+        )
+        self.assertFalse(result["ready"])
+        self.assertIn("checks_not_passing", result["reasons"])
+        self.assertIn("review_not_approved", result["reasons"])
+
 
 class BuildIntakeUiSurfaceTests(unittest.TestCase):
     def test_build_intake_proxy_routes_to_backend(self):
@@ -263,6 +315,7 @@ class BuildIntakeUiSurfaceTests(unittest.TestCase):
         execution_start_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/execution/start/route.ts")
         execution_complete_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/execution/[runId]/complete/route.ts")
         verification_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/verification/route.ts")
+        github_sync_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/github-sync/route.ts")
 
         self.assertIn("/v1/build/intake", list_source)
         self.assertIn("/v1/build/intake/${id}", detail_source)
@@ -273,6 +326,7 @@ class BuildIntakeUiSurfaceTests(unittest.TestCase):
         self.assertIn("/v1/build/intake/${id}/execution/start", execution_start_source)
         self.assertIn("/v1/build/intake/${id}/execution/${runId}/complete", execution_complete_source)
         self.assertIn("/v1/build/intake/${id}/verification", verification_source)
+        self.assertIn("/v1/build/intake/${id}/github-sync", github_sync_source)
 
     def test_command_surface_exposes_build_intake_and_stage_controls(self):
         source = read_repo_file("apps/tufflove-web/app/familyops/router/ModelRouterClient.tsx")
@@ -284,6 +338,8 @@ class BuildIntakeUiSurfaceTests(unittest.TestCase):
         self.assertIn("Execution Runner + Proof Ingestion", source)
         self.assertIn("Complete Execution + Ingest Proof", source)
         self.assertIn("Verification Hook", source)
+        self.assertIn("Live GitHub PR Sync", source)
+        self.assertIn("Sync GitHub PR Status", source)
         self.assertIn("Build Intake + Router + Mission Timeline", source)
 
 
