@@ -47,6 +47,7 @@ from app.operator_service import (
 from app.model_router_service import (
     apply_model_router_decision_action,
     create_model_router_decision,
+    execute_model_router_decision_provider_run,
     get_model_router_decision,
     init_model_router_tables,
     list_model_router_decisions,
@@ -92,6 +93,10 @@ from app.trigger_service import (
     init_trigger_tables,
     list_triggers as list_trigger_configs,
     run_due_triggers,
+)
+from app.provider_adapter_service import (
+    execute_provider_task,
+    list_provider_statuses,
 )
 
 load_dotenv()
@@ -316,6 +321,13 @@ class ModelRouterActionRequest(BaseModel):
     requested_model: str | None = None
 
 
+class ModelRouterProviderRunRequest(BaseModel):
+    actor: str = "admin"
+    prompt: str
+    requested_lane: str | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
 class BuildIntakeCreateRequest(BaseModel):
     tenant_id: str = "familyops"
     goal: str
@@ -357,6 +369,7 @@ class BuildPrDraftRequest(BaseModel):
 
 class BuildExecutionStartRequest(BaseModel):
     actor: str = "admin"
+    task_class: ModelTaskClass = "implement"
     command_class: str = "codex"
     target_scope: str = "repo"
     summary: str = ""
@@ -400,6 +413,13 @@ class BuildGithubWritebackRequest(BaseModel):
     title: str | None = None
     body: str | None = None
     draft: bool = True
+
+
+class ProviderRunRequest(BaseModel):
+    task_class: ModelTaskClass
+    prompt: str
+    requested_lane: str | None = None
+    metadata: dict = Field(default_factory=dict)
 
 
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
@@ -1133,6 +1153,23 @@ def model_router_action_endpoint(decision_id: str, body: ModelRouterActionReques
     return {"ok": True, "decision": updated}
 
 
+@app.post("/v1/model-router/decision/{decision_id}/provider-run", dependencies=[Depends(require_admin)])
+def model_router_provider_run_endpoint(decision_id: str, body: ModelRouterProviderRunRequest):
+    try:
+        decision = execute_model_router_decision_provider_run(
+            decision_id,
+            actor=body.actor.strip() or "admin",
+            prompt=body.prompt,
+            requested_lane=body.requested_lane,
+            metadata=body.metadata or {},
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    if decision is None:
+        raise HTTPException(status_code=404, detail="Model router decision not found")
+    return {"ok": True, "decision": decision}
+
+
 @app.get("/v1/model-router/decision/{decision_id}/events", dependencies=[Depends(require_admin)])
 def model_router_decision_events_endpoint(decision_id: str, limit: int = 300):
     decision = get_model_router_decision(decision_id)
@@ -1142,6 +1179,30 @@ def model_router_decision_events_endpoint(decision_id: str, limit: int = 300):
         "decision_id": decision_id,
         "events": list_model_router_decision_events(decision_id, limit=limit),
     }
+
+
+@app.get("/v1/providers/status", dependencies=[Depends(require_admin)])
+def provider_status_endpoint():
+    statuses = list_provider_statuses()
+    return {
+        "providers": statuses,
+        "openclaw_required_for_verification": True,
+        "openclaw_available": bool((statuses.get("openclaw") or {}).get("available")),
+    }
+
+
+@app.post("/v1/providers/run", dependencies=[Depends(require_admin)])
+def provider_run_endpoint(body: ProviderRunRequest):
+    try:
+        result = execute_provider_task(
+            task_class=body.task_class,
+            prompt=body.prompt,
+            requested_lane=body.requested_lane,
+            metadata=body.metadata or {},
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    return {"ok": True, "result": result}
 
 
 @app.post("/v1/build/intake", dependencies=[Depends(require_admin)])
@@ -1262,6 +1323,7 @@ def build_intake_execution_start_endpoint(build_request_id: str, body: BuildExec
         build_request_id,
         actor=body.actor.strip() or "admin",
         command_class=body.command_class,
+        task_class=body.task_class,
         target_scope=body.target_scope,
         summary=body.summary,
         router_decision_id=body.router_decision_id,

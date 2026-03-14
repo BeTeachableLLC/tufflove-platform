@@ -13,6 +13,10 @@ from psycopg.types.json import Jsonb
 from app.db import connect
 from app.model_router_service import get_model_router_decision, list_model_router_decision_events
 from app.mission_history_service import get_familyops_mission
+from app.provider_adapter_service import (
+    is_openclaw_available,
+    resolve_provider_for_task,
+)
 
 BUILD_STAGES = {
     "intake",
@@ -44,6 +48,7 @@ GITHUB_CHECK_STATUSES = {"unknown", "pending", "passing", "failing"}
 GITHUB_REVIEW_STATUSES = {"unknown", "pending", "approved", "changes_requested"}
 GITHUB_PR_STATES = {"open", "closed", "merged", "unknown"}
 GITHUB_WRITEBACK_STATUSES = {"never", "success", "failed"}
+OPENCLAW_VERIFICATION_STATUSES = {"missing", "pending", "passed", "failed", "unavailable"}
 SENSITIVE_PATTERNS = [
     re.compile(r"(?i)(access[_-]?token\s*[=:]\s*)([^\s,;]+)"),
     re.compile(r"(?i)(refresh[_-]?token\s*[=:]\s*)([^\s,;]+)"),
@@ -175,6 +180,13 @@ def _normalize_github_writeback_status(raw: str, *, default: str = "never") -> s
     return candidate
 
 
+def _normalize_openclaw_verification_status(raw: str, *, default: str = "missing") -> str:
+    candidate = str(raw or default).strip().lower()
+    if candidate not in OPENCLAW_VERIFICATION_STATUSES:
+        return default
+    return candidate
+
+
 def _github_token() -> str | None:
     for name in ("GITHUB_TOKEN", "GH_TOKEN"):
         token = str(os.getenv(name, "")).strip()
@@ -244,6 +256,7 @@ def evaluate_github_merge_readiness(
     proof_status: str,
     verification_state: str,
     verification_required: bool,
+    openclaw_verification_status: str,
     github_sync: dict[str, Any] | None,
 ) -> dict[str, Any]:
     base = compute_recommendation(
@@ -253,6 +266,16 @@ def evaluate_github_merge_readiness(
         has_pr_draft=True,
     )
     reasons: list[str] = []
+    if not verification_required:
+        reasons.append("verification_required_for_merge")
+        return {"ready": False, "reasons": reasons, "stage": "approval_pending", "recommendation": "approval_pending"}
+
+    normalized_openclaw_status = _normalize_openclaw_verification_status(openclaw_verification_status)
+    if not is_openclaw_available():
+        reasons.append("openclaw_unavailable")
+    elif normalized_openclaw_status != "passed":
+        reasons.append("openclaw_verification_missing_or_failed")
+
     if base["stage"] != "approval_pending":
         reasons.append("proof_or_verification_incomplete")
         return {"ready": False, "reasons": reasons, "stage": base["stage"], "recommendation": base["recommendation"]}
@@ -329,6 +352,9 @@ def _serialize_build_request(row: dict[str, Any]) -> dict[str, Any]:
         "github_writeback_status": row["github_writeback_status"],
         "github_writeback_error": row["github_writeback_error"],
         "github_last_writeback_at": _to_iso(row["github_last_writeback_at"]),
+        "required_verification_provider": row["required_verification_provider"],
+        "openclaw_verification_status": row["openclaw_verification_status"],
+        "openclaw_verification_detail": row["openclaw_verification_detail"],
         "created_by": row["created_by"],
         "created_at": _to_iso(row["created_at"]),
         "updated_at": _to_iso(row["updated_at"]),
@@ -369,6 +395,8 @@ def _serialize_execution_run(row: dict[str, Any]) -> dict[str, Any]:
         "tenant_id": row["tenant_id"],
         "router_decision_id": row["router_decision_id"],
         "mission_id": row["mission_id"],
+        "provider": row["provider"],
+        "task_class": row["task_class"],
         "command_class": row["command_class"],
         "target_scope": row["target_scope"],
         "status": row["status"],
@@ -446,6 +474,9 @@ def init_build_intake_tables() -> None:
                     github_writeback_status text NOT NULL DEFAULT 'never',
                     github_writeback_error text NOT NULL DEFAULT '',
                     github_last_writeback_at timestamptz,
+                    required_verification_provider text NOT NULL DEFAULT 'openclaw',
+                    openclaw_verification_status text NOT NULL DEFAULT 'missing',
+                    openclaw_verification_detail text NOT NULL DEFAULT '',
                     created_by text NOT NULL DEFAULT 'admin',
                     created_at timestamptz NOT NULL DEFAULT now(),
                     updated_at timestamptz NOT NULL DEFAULT now()
@@ -526,6 +557,24 @@ def init_build_intake_tables() -> None:
             )
             cur.execute(
                 """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS required_verification_provider text NOT NULL DEFAULT 'openclaw';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS openclaw_verification_status text NOT NULL DEFAULT 'missing';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS openclaw_verification_detail text NOT NULL DEFAULT '';
+                """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_build_requests_tenant_created
                 ON build_requests (tenant_id, created_at DESC);
                 """
@@ -597,6 +646,8 @@ def init_build_intake_tables() -> None:
                     tenant_id text NOT NULL,
                     router_decision_id text,
                     mission_id text,
+                    provider text NOT NULL DEFAULT '',
+                    task_class text NOT NULL DEFAULT 'implement',
                     command_class text NOT NULL DEFAULT '',
                     target_scope text NOT NULL DEFAULT '',
                     status text NOT NULL DEFAULT 'running',
@@ -614,6 +665,18 @@ def init_build_intake_tables() -> None:
                     created_at timestamptz NOT NULL DEFAULT now(),
                     updated_at timestamptz NOT NULL DEFAULT now()
                 );
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_execution_runs
+                ADD COLUMN IF NOT EXISTS provider text NOT NULL DEFAULT '';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_execution_runs
+                ADD COLUMN IF NOT EXISTS task_class text NOT NULL DEFAULT 'implement';
                 """
             )
             cur.execute(
@@ -702,6 +765,9 @@ def _get_build_request_row(build_request_id: str) -> dict[str, Any] | None:
                     github_writeback_status,
                     github_writeback_error,
                     github_last_writeback_at,
+                    required_verification_provider,
+                    openclaw_verification_status,
+                    openclaw_verification_detail,
                     created_by,
                     created_at,
                     updated_at
@@ -785,6 +851,8 @@ def _get_execution_run_row(run_id: str) -> dict[str, Any] | None:
                     tenant_id,
                     router_decision_id,
                     mission_id,
+                    provider,
+                    task_class,
                     command_class,
                     target_scope,
                     status,
@@ -821,6 +889,8 @@ def list_execution_runs(build_request_id: str, *, limit: int = 100) -> list[dict
                     tenant_id,
                     router_decision_id,
                     mission_id,
+                    provider,
+                    task_class,
                     command_class,
                     target_scope,
                     status,
@@ -863,7 +933,7 @@ def _resolve_verification_required(
     if verification_required_override is not None:
         required = bool(verification_required_override)
     else:
-        required = bool(row.get("sensitive_change"))
+        required = True
         decision_id = str(row.get("router_decision_id") or "").strip()
         if decision_id:
             decision = get_model_router_decision(decision_id, include_events=False)
@@ -1236,6 +1306,9 @@ def list_build_requests(
                     github_writeback_status,
                     github_writeback_error,
                     github_last_writeback_at,
+                    required_verification_provider,
+                    openclaw_verification_status,
+                    openclaw_verification_detail,
                     created_by,
                     created_at,
                     updated_at
@@ -1383,6 +1456,9 @@ def _update_build_request(
     github_writeback_status: str | None = None,
     github_writeback_error: str | None = None,
     github_last_writeback_at: datetime | None = None,
+    required_verification_provider: str | None = None,
+    openclaw_verification_status: str | None = None,
+    openclaw_verification_detail: str | None = None,
 ) -> None:
     fields: list[str] = []
     values: list[Any] = []
@@ -1452,6 +1528,15 @@ def _update_build_request(
     if github_last_writeback_at is not None:
         fields.append("github_last_writeback_at = %s")
         values.append(github_last_writeback_at)
+    if required_verification_provider is not None:
+        fields.append("required_verification_provider = %s")
+        values.append(str(required_verification_provider or "").strip() or "openclaw")
+    if openclaw_verification_status is not None:
+        fields.append("openclaw_verification_status = %s")
+        values.append(_normalize_openclaw_verification_status(openclaw_verification_status))
+    if openclaw_verification_detail is not None:
+        fields.append("openclaw_verification_detail = %s")
+        values.append(str(openclaw_verification_detail or "").strip())
     if not fields:
         return
 
@@ -1634,6 +1719,7 @@ def start_build_execution_run(
     *,
     actor: str,
     command_class: str,
+    task_class: str = "implement",
     target_scope: str,
     summary: str = "",
     router_decision_id: str | None = None,
@@ -1646,6 +1732,20 @@ def start_build_execution_run(
     run_id = str(uuid4())
     effective_router_decision_id = str(router_decision_id or row.get("router_decision_id") or "").strip() or None
     effective_mission_id = str(mission_id or row.get("mission_id") or "").strip() or None
+    normalized_task_class = str(task_class or "implement").strip().lower() or "implement"
+    requested_lane = str(command_class or "").strip().lower() or None
+    try:
+        provider_resolution = resolve_provider_for_task(
+            task_class=normalized_task_class,
+            requested_lane=requested_lane,
+        )
+    except ValueError as error:
+        provider_resolution = {
+            "provider": requested_lane or "unavailable",
+            "lane": requested_lane or "codex",
+            "fallback_used": False,
+            "fallback_reason": str(error),
+        }
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1656,6 +1756,8 @@ def start_build_execution_run(
                     tenant_id,
                     router_decision_id,
                     mission_id,
+                    provider,
+                    task_class,
                     command_class,
                     target_scope,
                     status,
@@ -1663,7 +1765,7 @@ def start_build_execution_run(
                     proof_status,
                     created_by
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'running', %s, 'unknown', %s);
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'running', %s, 'unknown', %s);
                 """,
                 (
                     run_id,
@@ -1671,7 +1773,9 @@ def start_build_execution_run(
                     row["tenant_id"],
                     effective_router_decision_id,
                     effective_mission_id,
-                    str(command_class or "").strip(),
+                    str(provider_resolution.get("provider") or "").strip(),
+                    normalized_task_class,
+                    str(provider_resolution.get("lane") or command_class or "").strip(),
                     str(target_scope or "").strip(),
                     str(summary or "").strip(),
                     str(actor or "").strip() or "admin",
@@ -1684,6 +1788,7 @@ def start_build_execution_run(
         stage="implementation_started",
         latest_execution_run_id=run_id,
         recommendation="needs_execution",
+        required_verification_provider="openclaw",
     )
     record_build_event(
         build_request_id=build_request_id,
@@ -1692,7 +1797,11 @@ def start_build_execution_run(
         detail="Execution run started",
         metadata={
             "execution_run_id": run_id,
-            "command_class": str(command_class or "").strip(),
+            "command_class": str(provider_resolution.get("lane") or command_class or "").strip(),
+            "provider": str(provider_resolution.get("provider") or "").strip(),
+            "task_class": normalized_task_class,
+            "provider_fallback_used": bool(provider_resolution.get("fallback_used")),
+            "provider_fallback_reason": str(provider_resolution.get("fallback_reason") or ""),
             "target_scope": str(target_scope or "").strip(),
         },
         created_by=actor,
@@ -1724,6 +1833,8 @@ def complete_build_execution_run(
     run_row = _get_execution_run_row(run_id)
     if run_row is None or run_row["build_request_id"] != build_request_id:
         raise KeyError("Execution run not found")
+    run_provider = str(run_row.get("provider") or "").strip().lower()
+    run_task_class = str(run_row.get("task_class") or "").strip().lower() or "implement"
 
     normalized_status = _normalize_execution_status(status)
     normalized_proof_status = _infer_execution_proof_status(
@@ -1738,6 +1849,29 @@ def complete_build_execution_run(
         request_verification=bool(request_verification),
         verification_required_override=verification_required,
     )
+    next_openclaw_verification_status = _normalize_openclaw_verification_status(
+        str(row.get("openclaw_verification_status") or "missing"),
+    )
+    next_openclaw_verification_detail = str(row.get("openclaw_verification_detail") or "").strip()
+    if bool(request_verification):
+        next_openclaw_verification_status = "pending"
+        next_openclaw_verification_detail = "OpenClaw verification requested"
+    if run_task_class == "verify":
+        if not is_openclaw_available():
+            next_openclaw_verification_status = "unavailable"
+            next_openclaw_verification_detail = "OpenClaw verification provider unavailable"
+        elif run_provider != "openclaw":
+            next_openclaw_verification_status = "failed"
+            next_openclaw_verification_detail = "Verification run did not use OpenClaw"
+        elif normalized_status == "passed" and normalized_proof_status == "passed":
+            next_openclaw_verification_status = "passed"
+            next_openclaw_verification_detail = str(summary or "OpenClaw verification passed").strip()
+        else:
+            next_openclaw_verification_status = "failed"
+            next_openclaw_verification_detail = (
+                effective_failure_note
+                or str(summary or "OpenClaw verification failed").strip()
+            )
 
     current_verification_state = str(row.get("verification_state") or "not_required")
     if effective_verification_required:
@@ -1803,6 +1937,9 @@ def complete_build_execution_run(
         latest_execution_run_id=run_id,
         failure_note=effective_failure_note,
         rollback_note=effective_rollback_note,
+        required_verification_provider="openclaw",
+        openclaw_verification_status=next_openclaw_verification_status,
+        openclaw_verification_detail=next_openclaw_verification_detail,
     )
     record_build_event(
         build_request_id=build_request_id,
@@ -1816,11 +1953,27 @@ def complete_build_execution_run(
             "verification_state": next_verification_state,
             "recommendation": recommendation_update["recommendation"],
             "request_verification": bool(request_verification),
+            "provider": run_provider,
+            "task_class": run_task_class,
+            "openclaw_verification_status": next_openclaw_verification_status,
             "failure_note": effective_failure_note,
             "rollback_note": effective_rollback_note,
         },
         created_by=actor,
     )
+    if run_task_class == "verify":
+        record_build_event(
+            build_request_id=build_request_id,
+            tenant_id=row["tenant_id"],
+            event_type="openclaw_verification",
+            detail=next_openclaw_verification_detail or "OpenClaw verification updated",
+            metadata={
+                "execution_run_id": run_id,
+                "provider": run_provider,
+                "status": next_openclaw_verification_status,
+            },
+            created_by=actor,
+        )
     return get_build_request(build_request_id)
 
 
@@ -1853,11 +2006,27 @@ def set_build_verification_state(
         verification_required=effective_verification_required,
         has_pr_draft=_build_has_pr_link(row),
     )
+    next_openclaw_status = _normalize_openclaw_verification_status(
+        str(row.get("openclaw_verification_status") or "missing"),
+    )
+    next_openclaw_detail = str(row.get("openclaw_verification_detail") or "").strip()
+    if normalized_verification_state == "pending":
+        next_openclaw_status = "pending"
+        next_openclaw_detail = detail or "OpenClaw verification pending"
+    elif normalized_verification_state == "failed":
+        next_openclaw_status = "failed"
+        next_openclaw_detail = detail or "OpenClaw verification failed"
+    elif normalized_verification_state == "passed" and next_openclaw_status != "passed":
+        next_openclaw_status = "failed"
+        next_openclaw_detail = "Verification cannot pass without OpenClaw verification pass"
     _update_build_request(
         build_request_id,
         stage=recommendation_update["stage"],
         verification_state=normalized_verification_state,
         recommendation=recommendation_update["recommendation"],
+        required_verification_provider="openclaw",
+        openclaw_verification_status=next_openclaw_status,
+        openclaw_verification_detail=next_openclaw_detail,
     )
     record_build_event(
         build_request_id=build_request_id,
@@ -1868,6 +2037,8 @@ def set_build_verification_state(
             "verification_state": normalized_verification_state,
             "verification_required": effective_verification_required,
             "recommendation": recommendation_update["recommendation"],
+            "required_verification_provider": "openclaw",
+            "openclaw_verification_status": next_openclaw_status,
         },
         created_by=actor,
     )
@@ -1908,6 +2079,7 @@ def sync_build_request_github_status(
         proof_status=str(row.get("proof_status") or "unknown"),
         verification_state=str(row.get("verification_state") or "not_required"),
         verification_required=verification_required,
+        openclaw_verification_status=str(row.get("openclaw_verification_status") or "missing"),
         github_sync=snapshot,
     )
     blocked_reasons = list(merge_readiness.get("reasons") or [])

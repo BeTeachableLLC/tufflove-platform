@@ -48,7 +48,7 @@ class ModelRouterPolicyTests(unittest.TestCase):
                 requested_model=None,
                 openclaw_verify_enabled=False,
             ),
-            "gemini",
+            "openclaw",
         )
         self.assertEqual(
             model_router_service.select_model(
@@ -67,7 +67,7 @@ class ModelRouterPolicyTests(unittest.TestCase):
             sensitive_change=True,
             requested_verification_required=None,
             requested_verification_model=None,
-            openclaw_verify_enabled=False,
+            openclaw_verify_enabled=True,
         )
         self.assertTrue(sensitive["verification_required"])
         self.assertEqual(sensitive["verification_status"], "pending")
@@ -80,12 +80,13 @@ class ModelRouterPolicyTests(unittest.TestCase):
             sensitive_change=False,
             requested_verification_required=None,
             requested_verification_model=None,
-            openclaw_verify_enabled=False,
+            openclaw_verify_enabled=True,
         )
         self.assertTrue(failing["verification_required"])
+        self.assertEqual(failing["verification_status"], "pending")
         self.assertIn("proof_not_passing", failing["policy_reasons"])
 
-    def test_optional_openclaw_lane_falls_back_when_disabled(self):
+    def test_openclaw_verification_lane_fails_safe_when_unavailable(self):
         policy = model_router_service.evaluate_verification_policy(
             task_class="implement",
             selected_model="codex",
@@ -95,7 +96,9 @@ class ModelRouterPolicyTests(unittest.TestCase):
             requested_verification_model="openclaw",
             openclaw_verify_enabled=False,
         )
-        self.assertEqual(policy["verification_model"], "gemini")
+        self.assertEqual(policy["verification_model"], "openclaw")
+        self.assertEqual(policy["verification_status"], "failed")
+        self.assertIn("openclaw_unavailable", policy["policy_reasons"])
 
 
 class ModelRouterEndpointTests(unittest.TestCase):
@@ -222,6 +225,74 @@ class ModelRouterEndpointTests(unittest.TestCase):
         self.assertEqual(kwargs["actor"], "moe")
         self.assertEqual(kwargs["note"], "All checks green")
 
+    def test_provider_status_endpoint_returns_provider_map(self):
+        with patch(
+            "app.main.list_provider_statuses",
+            return_value={
+                "openai": {"provider": "openai", "enabled": True, "configured": True, "available": True, "model": "gpt-5-codex"},
+                "openclaw": {"provider": "openclaw", "enabled": True, "configured": True, "available": True, "model": "openclaw-verify"},
+            },
+        ) as mock_status:
+            response = main.provider_status_endpoint()
+
+        self.assertIn("providers", response)
+        self.assertTrue(response["openclaw_required_for_verification"])
+        self.assertTrue(response["openclaw_available"])
+        mock_status.assert_called_once()
+
+    def test_provider_run_endpoint_executes_adapter(self):
+        with patch(
+            "app.main.execute_provider_task",
+            return_value={"provider": "openai", "lane": "codex", "status": "ok", "summary": "done"},
+        ) as mock_run:
+            response = main.provider_run_endpoint(
+                main.ProviderRunRequest(
+                    task_class="implement",
+                    prompt="Implement unit test fix",
+                    requested_lane="codex",
+                    metadata={"source": "test"},
+                )
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["provider"], "openai")
+        _, kwargs = mock_run.call_args
+        self.assertEqual(kwargs["task_class"], "implement")
+        self.assertEqual(kwargs["requested_lane"], "codex")
+
+    def test_provider_run_endpoint_returns_bad_request_on_invalid_lane(self):
+        with patch("app.main.execute_provider_task", side_effect=ValueError("bad lane")):
+            with self.assertRaises(HTTPException) as context:
+                main.provider_run_endpoint(
+                    main.ProviderRunRequest(
+                        task_class="implement",
+                        prompt="Implement unit test fix",
+                        requested_lane="invalid",
+                    )
+                )
+        self.assertEqual(context.exception.status_code, 400)
+
+    def test_model_router_provider_run_endpoint_executes_and_returns_decision(self):
+        with patch(
+            "app.main.execute_model_router_decision_provider_run",
+            return_value={"id": "decision-1", "selected_model": "codex", "events": []},
+        ) as mock_execute:
+            response = main.model_router_provider_run_endpoint(
+                "decision-1",
+                main.ModelRouterProviderRunRequest(
+                    actor="moe",
+                    prompt="run provider",
+                    requested_lane="codex",
+                    metadata={"source": "test"},
+                ),
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["decision"]["id"], "decision-1")
+        _, kwargs = mock_execute.call_args
+        self.assertEqual(kwargs["actor"], "moe")
+        self.assertEqual(kwargs["requested_lane"], "codex")
+
 
 class ModelRouterUiSurfaceTests(unittest.TestCase):
     def test_router_page_keeps_familyops_admin_gate(self):
@@ -233,10 +304,14 @@ class ModelRouterUiSurfaceTests(unittest.TestCase):
         list_source = read_repo_file("apps/tufflove-web/app/api/familyops/model-router/route.ts")
         detail_source = read_repo_file("apps/tufflove-web/app/api/familyops/model-router/[id]/route.ts")
         action_source = read_repo_file("apps/tufflove-web/app/api/familyops/model-router/[id]/action/route.ts")
+        provider_run_source = read_repo_file("apps/tufflove-web/app/api/familyops/model-router/[id]/provider-run/route.ts")
+        provider_status_source = read_repo_file("apps/tufflove-web/app/api/familyops/providers/route.ts")
         self.assertIn("/v1/model-router/decisions", list_source)
         self.assertIn("/v1/model-router/route", list_source)
         self.assertIn("/v1/model-router/decision/", detail_source)
         self.assertIn("/v1/model-router/decision/${id}/action", action_source)
+        self.assertIn("/v1/model-router/decision/${id}/provider-run", provider_run_source)
+        self.assertIn("/v1/providers/status", provider_status_source)
 
     def test_router_client_shows_approval_actions_and_timeline(self):
         source = read_repo_file("apps/tufflove-web/app/familyops/router/ModelRouterClient.tsx")
@@ -246,6 +321,8 @@ class ModelRouterUiSurfaceTests(unittest.TestCase):
         self.assertIn("Request Second-Model Review", source)
         self.assertIn("Mark Ready for PR Review", source)
         self.assertIn("Mark Ready for Merge", source)
+        self.assertIn("Run Provider Adapter", source)
+        self.assertIn("Provider Lanes", source)
         self.assertIn("Unified Timeline", source)
         self.assertIn("Open GitHub PR", source)
 
