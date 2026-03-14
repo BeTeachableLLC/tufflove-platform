@@ -226,19 +226,39 @@ class ModelRouterEndpointTests(unittest.TestCase):
         self.assertEqual(kwargs["note"], "All checks green")
 
     def test_provider_status_endpoint_returns_provider_map(self):
-        with patch(
-            "app.main.list_provider_statuses",
-            return_value={
-                "openai": {"provider": "openai", "enabled": True, "configured": True, "available": True, "model": "gpt-5-codex"},
-                "openclaw": {"provider": "openclaw", "enabled": True, "configured": True, "available": True, "model": "openclaw-verify"},
-            },
-        ) as mock_status:
+        with (
+            patch(
+                "app.main.list_provider_statuses",
+                return_value={
+                    "openai": {"provider": "openai", "enabled": True, "configured": True, "available": True, "model": "gpt-5-codex"},
+                    "openclaw": {"provider": "openclaw", "enabled": True, "configured": True, "available": True, "model": "openclaw-verify"},
+                },
+            ) as mock_status,
+            patch(
+                "app.main.collect_provider_account_verification",
+                return_value={
+                    "accounts": {"github": {"provider": "github", "verification_status": "passing"}},
+                    "required_accounts": ["github", "zeroclaw", "openclaw"],
+                    "execution_required_accounts": ["github", "zeroclaw", "openai"],
+                    "required_verification_passed": True,
+                    "execution_ready": True,
+                    "failed_required_accounts": [],
+                    "failed_execution_accounts": [],
+                    "github_expected_repo": "BeTeachableLLC/tufflove-platform",
+                    "github_configured_repo": "BeTeachableLLC/tufflove-platform",
+                    "github_repo_match": True,
+                },
+            ) as mock_verification,
+        ):
             response = main.provider_status_endpoint()
 
         self.assertIn("providers", response)
+        self.assertIn("accounts", response)
+        self.assertTrue(response["github_repo_match"])
         self.assertTrue(response["openclaw_required_for_verification"])
         self.assertTrue(response["openclaw_available"])
         mock_status.assert_called_once()
+        mock_verification.assert_called_once()
 
     def test_provider_run_endpoint_executes_adapter(self):
         with patch(
@@ -323,6 +343,9 @@ class ModelRouterUiSurfaceTests(unittest.TestCase):
         self.assertIn("Mark Ready for Merge", source)
         self.assertIn("Run Provider Adapter", source)
         self.assertIn("Provider Lanes", source)
+        self.assertIn("Provider Account Verification", source)
+        self.assertIn("GitHub Repo Target", source)
+        self.assertIn("Mismatch warning", source)
         self.assertIn("Unified Timeline", source)
         self.assertIn("Open GitHub PR", source)
 

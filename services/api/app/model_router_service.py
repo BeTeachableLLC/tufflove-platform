@@ -9,8 +9,10 @@ from psycopg.types.json import Jsonb
 
 from app.db import connect
 from app.provider_adapter_service import (
+    collect_provider_account_verification,
     execute_provider_task,
     is_openclaw_available,
+    ProviderExecutionError,
     resolve_provider_for_task,
 )
 
@@ -991,10 +993,40 @@ def execute_model_router_decision_provider_run(
         return None
 
     actor_name = str(actor or "").strip() or "admin"
+    task_class = str(current.get("task_class") or "implement")
     lane = str(requested_lane or current.get("selected_model") or "").strip() or None
+    verification = collect_provider_account_verification(
+        task_class=task_class,
+        requested_lane=lane,
+    )
+    verification_failed = list(verification.get("failed_execution_accounts") or [])
+    record_model_router_event(
+        decision_id=decision_id,
+        tenant_id=current["tenant_id"],
+        event_type="account_verification",
+        event_status="ok" if not verification_failed else "failed",
+        detail="Provider account verification passed" if not verification_failed else "Provider account verification failed",
+        metadata={
+            "task_class": task_class,
+            "requested_lane": lane,
+            "selected_provider": verification.get("selected_provider"),
+            "required_accounts": verification.get("execution_required_accounts") or [],
+            "failed_accounts": verification_failed,
+            "github_expected_repo": verification.get("github_expected_repo"),
+            "github_configured_repo": verification.get("github_configured_repo"),
+            "github_repo_match": bool(verification.get("github_repo_match")),
+        },
+        created_by=actor_name,
+    )
+    if verification_failed:
+        failed_text = ", ".join(verification_failed)
+        raise ProviderExecutionError(
+            f"Provider account verification failed: {failed_text}",
+            code="account_verification_failed",
+        )
     try:
         result = execute_provider_task(
-            task_class=str(current.get("task_class") or "implement"),
+            task_class=task_class,
             prompt=prompt,
             requested_lane=lane,
             metadata=metadata or {},

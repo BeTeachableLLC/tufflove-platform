@@ -143,8 +143,34 @@ type ProviderStatus = {
   model: string;
 };
 
+type ProviderAccountStatus = {
+  provider: string;
+  required: boolean;
+  enabled: boolean;
+  credential_present: boolean;
+  endpoint: string;
+  identity_marker: string;
+  org_project_marker: string;
+  verification_status: string;
+  verification_passed: boolean;
+  reason: string;
+  mismatch: boolean;
+  expected_repo?: string;
+  configured_repo?: string;
+};
+
 type ProviderStatusResponse = {
   providers?: Record<string, ProviderStatus>;
+  accounts?: Record<string, ProviderAccountStatus>;
+  required_accounts?: string[];
+  execution_required_accounts?: string[];
+  required_verification_passed?: boolean;
+  execution_ready?: boolean;
+  failed_required_accounts?: string[];
+  failed_execution_accounts?: string[];
+  github_expected_repo?: string;
+  github_configured_repo?: string;
+  github_repo_match?: boolean;
   openclaw_required_for_verification?: boolean;
   openclaw_available?: boolean;
 };
@@ -276,9 +302,9 @@ function pretty(value: unknown): string {
 
 function badgeClass(status: string): string {
   const normalized = status.toLowerCase();
-  if (["passed", "passing", "ready_for_pr_review", "ready_for_merge", "approved", "clean", "has_hooks"].includes(normalized)) return styles.good;
-  if (["failed", "failing", "rejected", "needs_changes", "revise_before_pr", "changes_requested", "dirty", "blocked", "behind"].includes(normalized)) return styles.bad;
-  if (["pending", "not_run", "needs_second_model_review", "rerun_requested", "second_review_requested"].includes(normalized)) {
+  if (["passed", "passing", "ready_for_pr_review", "ready_for_merge", "approved", "clean", "has_hooks", "ok"].includes(normalized)) return styles.good;
+  if (["failed", "failing", "rejected", "needs_changes", "revise_before_pr", "changes_requested", "dirty", "blocked", "behind", "unavailable"].includes(normalized)) return styles.bad;
+  if (["pending", "not_run", "needs_second_model_review", "rerun_requested", "second_review_requested", "warning"].includes(normalized)) {
     return styles.warn;
   }
   return styles.neutral;
@@ -306,6 +332,16 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [providerStatuses, setProviderStatuses] = useState<Record<string, ProviderStatus>>({});
+  const [providerAccounts, setProviderAccounts] = useState<Record<string, ProviderAccountStatus>>({});
+  const [requiredAccounts, setRequiredAccounts] = useState<string[]>([]);
+  const [executionRequiredAccounts, setExecutionRequiredAccounts] = useState<string[]>([]);
+  const [providerExecutionReady, setProviderExecutionReady] = useState(true);
+  const [providerRequiredReady, setProviderRequiredReady] = useState(true);
+  const [failedRequiredAccounts, setFailedRequiredAccounts] = useState<string[]>([]);
+  const [failedExecutionAccounts, setFailedExecutionAccounts] = useState<string[]>([]);
+  const [githubExpectedRepo, setGithubExpectedRepo] = useState("");
+  const [githubConfiguredRepo, setGithubConfiguredRepo] = useState("");
+  const [githubRepoMatch, setGithubRepoMatch] = useState(true);
   const [providerStatusError, setProviderStatusError] = useState<string | null>(null);
   const [providerStatusLoading, setProviderStatusLoading] = useState(false);
 
@@ -451,8 +487,28 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       }
       const data = (payload && typeof payload === "object" ? payload : {}) as ProviderStatusResponse;
       setProviderStatuses(data.providers && typeof data.providers === "object" ? data.providers : {});
+      setProviderAccounts(data.accounts && typeof data.accounts === "object" ? data.accounts : {});
+      setRequiredAccounts(Array.isArray(data.required_accounts) ? data.required_accounts : []);
+      setExecutionRequiredAccounts(Array.isArray(data.execution_required_accounts) ? data.execution_required_accounts : []);
+      setProviderExecutionReady(Boolean(data.execution_ready ?? true));
+      setProviderRequiredReady(Boolean(data.required_verification_passed ?? true));
+      setFailedRequiredAccounts(Array.isArray(data.failed_required_accounts) ? data.failed_required_accounts : []);
+      setFailedExecutionAccounts(Array.isArray(data.failed_execution_accounts) ? data.failed_execution_accounts : []);
+      setGithubExpectedRepo(typeof data.github_expected_repo === "string" ? data.github_expected_repo : "");
+      setGithubConfiguredRepo(typeof data.github_configured_repo === "string" ? data.github_configured_repo : "");
+      setGithubRepoMatch(Boolean(data.github_repo_match ?? true));
     } catch (loadError) {
       setProviderStatuses({});
+      setProviderAccounts({});
+      setRequiredAccounts([]);
+      setExecutionRequiredAccounts([]);
+      setProviderExecutionReady(false);
+      setProviderRequiredReady(false);
+      setFailedRequiredAccounts([]);
+      setFailedExecutionAccounts([]);
+      setGithubExpectedRepo("");
+      setGithubConfiguredRepo("");
+      setGithubRepoMatch(true);
       setProviderStatusError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
       setProviderStatusLoading(false);
@@ -628,6 +684,10 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
 
   async function runDecisionProvider() {
     if (!detail || !providerRunPrompt.trim()) return;
+    if (!providerExecutionReady) {
+      setActionError(providerExecutionBlockMessage || "Provider execution blocked by account verification policy.");
+      return;
+    }
     setProviderRunLoading(true);
     setActionError(null);
     try {
@@ -817,6 +877,10 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
 
   async function startExecutionRun() {
     if (!buildDetail) return;
+    if (!providerExecutionReady) {
+      setActionError(providerExecutionBlockMessage || "Provider execution blocked by account verification policy.");
+      return;
+    }
     setBuildStageUpdating("implementation_started");
     setActionError(null);
     try {
@@ -1049,6 +1113,14 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
     return { status: "blocked", blockedReasons: ["recommendation_not_ready_for_merge"] };
   }, [buildDetail]);
 
+  const providerExecutionBlockMessage = useMemo(() => {
+    if (providerExecutionReady) return "";
+    if (failedExecutionAccounts.length > 0) {
+      return `Provider execution blocked: ${failedExecutionAccounts.join(", ")}`;
+    }
+    return "Provider execution blocked by account verification policy.";
+  }, [failedExecutionAccounts, providerExecutionReady]);
+
   return (
     <main className={styles.page}>
       <header className={styles.header}>
@@ -1069,18 +1141,72 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       {buildError ? <div className={styles.error}>{buildError}</div> : null}
       {actionError ? <div className={styles.error}>{actionError}</div> : null}
       {providerStatusError ? <div className={styles.error}>{providerStatusError}</div> : null}
+      {providerExecutionReady ? null : <div className={styles.error}>{providerExecutionBlockMessage}</div>}
 
       <section className={styles.card}>
-        <h2>Provider Lanes</h2>
+        <h2>Provider Account Verification</h2>
         {providerStatusLoading ? <div className={styles.muted}>Loading provider status...</div> : null}
+        <div className={styles.detailGrid}>
+          <div>
+            <strong>Required Accounts</strong>
+            <div className={styles.itemMeta}>{requiredAccounts.length > 0 ? requiredAccounts.join(", ") : "-"}</div>
+            <div className={styles.itemMeta}>
+              Required health:{" "}
+              <span className={`${styles.badge} ${badgeClass(providerRequiredReady ? "passing" : "failing")}`}>
+                {providerRequiredReady ? "passing" : "failing"}
+              </span>
+            </div>
+            <div className={styles.itemMeta}>Failed required: {failedRequiredAccounts.length > 0 ? failedRequiredAccounts.join(", ") : "-"}</div>
+          </div>
+          <div>
+            <strong>Execution Gate</strong>
+            <div className={styles.itemMeta}>{executionRequiredAccounts.length > 0 ? executionRequiredAccounts.join(", ") : "-"}</div>
+            <div className={styles.itemMeta}>
+              Execution readiness:{" "}
+              <span className={`${styles.badge} ${badgeClass(providerExecutionReady ? "passing" : "failing")}`}>
+                {providerExecutionReady ? "ready" : "blocked"}
+              </span>
+            </div>
+            <div className={styles.itemMeta}>Failed execution: {failedExecutionAccounts.length > 0 ? failedExecutionAccounts.join(", ") : "-"}</div>
+          </div>
+          <div>
+            <strong>GitHub Repo Target</strong>
+            <div className={styles.itemMeta}>Expected: {githubExpectedRepo || "-"}</div>
+            <div className={styles.itemMeta}>Configured: {githubConfiguredRepo || "-"}</div>
+            <div className={styles.itemMeta}>
+              Match:{" "}
+              <span className={`${styles.badge} ${badgeClass(githubRepoMatch ? "passing" : "failing")}`}>
+                {githubRepoMatch ? "match" : "mismatch"}
+              </span>
+            </div>
+          </div>
+        </div>
+        <h3>Account Health</h3>
+        <div className={styles.detailGrid}>
+          {Object.values(providerAccounts).length === 0 ? <div className={styles.muted}>No account verification details available.</div> : null}
+          {Object.values(providerAccounts).map((account) => (
+            <div key={account.provider}>
+              <strong>{account.provider}</strong>{" "}
+              <span className={`${styles.badge} ${badgeClass(account.verification_status || "unknown")}`}>{account.verification_status || "unknown"}</span>{" "}
+              <span className={`${styles.badge} ${badgeClass(account.required ? "pending" : "not_run")}`}>
+                {account.required ? "required" : "optional"}
+              </span>
+              <div className={styles.itemMeta}>enabled: {account.enabled ? "true" : "false"}</div>
+              <div className={styles.itemMeta}>credential: {account.credential_present ? "present" : "missing"}</div>
+              <div className={styles.itemMeta}>endpoint: {account.endpoint || "-"}</div>
+              <div className={styles.itemMeta}>marker: {account.org_project_marker || account.identity_marker || "-"}</div>
+              <div className={styles.itemMeta}>reason: {account.reason || "-"}</div>
+              {account.mismatch ? <div className={styles.error}>Mismatch warning: expected {account.expected_repo || githubExpectedRepo || "-"} but configured {account.configured_repo || githubConfiguredRepo || "-"}</div> : null}
+            </div>
+          ))}
+        </div>
+        <h3>Provider Lanes</h3>
         <div className={styles.detailGrid}>
           {Object.values(providerStatuses).length === 0 ? <div className={styles.muted}>No provider status available.</div> : null}
           {Object.values(providerStatuses).map((provider) => (
             <div key={provider.provider}>
               <strong>{provider.provider}</strong>{" "}
-              <span className={`${styles.badge} ${badgeClass(provider.available ? "passing" : "failing")}`}>
-                {provider.available ? "available" : "unavailable"}
-              </span>
+              <span className={`${styles.badge} ${badgeClass(provider.available ? "passing" : "failing")}`}>{provider.available ? "available" : "unavailable"}</span>
               <div className={styles.itemMeta}>enabled: {provider.enabled ? "true" : "false"}</div>
               <div className={styles.itemMeta}>configured: {provider.configured ? "true" : "false"}</div>
               <div className={styles.itemMeta}>model: {provider.model || "-"}</div>
@@ -1088,7 +1214,7 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
           ))}
         </div>
         <p className={styles.muted}>
-          Verification lane is required: OpenClaw must pass before merge-readiness. Non-verification lanes may fallback across enabled providers.
+          Verification lane is required: OpenClaw must pass before merge-readiness. Provider execution is blocked when required account verification fails.
         </p>
         <button type="button" onClick={() => void loadProviderStatuses()} disabled={providerStatusLoading}>
           {providerStatusLoading ? "Refreshing..." : "Refresh Providers"}
@@ -1451,7 +1577,7 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
                 Execution Summary
                 <textarea rows={2} value={executionSummary} onChange={(event) => setExecutionSummary(event.target.value)} />
               </label>
-              <button type="button" onClick={() => void startExecutionRun()} disabled={Boolean(buildStageUpdating)}>
+              <button type="button" onClick={() => void startExecutionRun()} disabled={Boolean(buildStageUpdating) || !providerExecutionReady}>
                 Start Execution Run
               </button>
 
@@ -1762,7 +1888,7 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
                   <option value="gemini">gemini</option>
                   <option value="claude">claude</option>
                   <option value="codex">codex</option>
-                  <option value="openclaw">openclaw (optional)</option>
+                  <option value="openclaw">openclaw (required verification lane)</option>
                 </select>
               </label>
               <div className={styles.actionGrid}>
@@ -1788,7 +1914,7 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
                 Provider Prompt
                 <textarea rows={3} value={providerRunPrompt} onChange={(event) => setProviderRunPrompt(event.target.value)} />
               </label>
-              <button type="button" onClick={() => void runDecisionProvider()} disabled={providerRunLoading || !providerRunPrompt.trim()}>
+              <button type="button" onClick={() => void runDecisionProvider()} disabled={providerRunLoading || !providerRunPrompt.trim() || !providerExecutionReady}>
                 {providerRunLoading ? "Running Provider..." : "Run Provider Adapter"}
               </button>
             </div>
