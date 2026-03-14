@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from importlib import metadata as importlib_metadata
 import os
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -20,6 +22,8 @@ PROVIDER_BY_LANE = {
     "gemini": "gemini",
     "openclaw": "openclaw",
 }
+EXPECTED_GITHUB_REPO = "BeTeachableLLC/tufflove-platform"
+REQUIRED_ACCOUNTS = {"github", "zeroclaw", "openclaw"}
 
 SENSITIVE_PATTERNS = [
     re.compile(r"(?i)(access[_-]?token\s*[=:]\s*)([^\s,;]+)"),
@@ -61,6 +65,51 @@ def _sanitize_text(value: str | None, *, max_len: int = 5000) -> str:
     if len(redacted) > max_len:
         return redacted[:max_len]
     return redacted
+
+
+def _safe_endpoint_marker(raw: str | None) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return value
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    if parsed.netloc:
+        return parsed.netloc
+    if parsed.path and "/" not in parsed.path:
+        return parsed.path
+    return value
+
+
+def _coalesce_marker(*values: str | None) -> str:
+    for value in values:
+        candidate = str(value or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _normalize_repo(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return raw.strip("/").replace(".git", "")
+
+
+def _resolve_zeroclaw_runtime_marker() -> tuple[str, str]:
+    enabled = _as_bool_env("PROVIDER_ZEROCLAW_ENABLED", True)
+    if not enabled:
+        return "disabled", "ZeroClaw runtime disabled by config"
+    try:
+        version = importlib_metadata.version("zeroclaw")
+    except importlib_metadata.PackageNotFoundError:
+        return "missing", "zeroclaw package is not installed"
+    except Exception as error:  # pragma: no cover - defensive branch
+        return "error", f"unable to resolve zeroclaw package metadata: {error}"
+    return f"zeroclaw:{version}", ""
 
 
 def _normalize_task_class(task_class: str) -> str:
@@ -124,6 +173,172 @@ def list_provider_statuses() -> dict[str, dict[str, Any]]:
             configured=bool(openclaw_url),
             model=str(os.getenv("OPENCLAW_MODEL", "openclaw-verify")).strip() or "openclaw-verify",
         ),
+    }
+
+
+def collect_provider_account_verification(
+    *,
+    task_class: str = "implement",
+    requested_lane: str | None = None,
+    selected_lane: str | None = None,
+    selected_provider: str | None = None,
+    require_github_for_execution: bool | None = None,
+) -> dict[str, Any]:
+    provider_statuses = list_provider_statuses()
+    normalized_task_class = _normalize_task_class(task_class)
+    lane = _normalize_lane(
+        selected_lane or requested_lane,
+        default=DEFAULT_LANE_BY_TASK_CLASS[normalized_task_class],
+    )
+    provider = str(selected_provider or PROVIDER_BY_LANE.get(lane, "openai")).strip().lower() or "openai"
+    if provider not in {"openai", "claude", "gemini", "openclaw"}:
+        provider = "openai"
+
+    expected_repo = _normalize_repo(os.getenv("GITHUB_EXPECTED_REPO", EXPECTED_GITHUB_REPO)) or EXPECTED_GITHUB_REPO
+    configured_repo = _normalize_repo(os.getenv("GITHUB_REPO", "")) or expected_repo
+    github_repo_match = configured_repo.lower() == expected_repo.lower()
+    github_token = str(os.getenv("GITHUB_TOKEN", "") or os.getenv("GH_TOKEN", "")).strip()
+    github_token_present = bool(github_token)
+    github_enabled = _as_bool_env("PROVIDER_GITHUB_ENABLED", True)
+    github_status = "passing"
+    github_reason = ""
+    if not github_enabled:
+        github_status = "failing"
+        github_reason = "github provider disabled"
+    elif not github_token_present:
+        github_status = "failing"
+        github_reason = "github token missing"
+    elif not github_repo_match:
+        github_status = "failing"
+        github_reason = "configured repo does not match expected repo"
+
+    zeroclaw_enabled = _as_bool_env("PROVIDER_ZEROCLAW_ENABLED", True)
+    zeroclaw_marker, zeroclaw_reason = _resolve_zeroclaw_runtime_marker()
+    zeroclaw_status = "passing"
+    if not zeroclaw_enabled or zeroclaw_marker in {"disabled", "missing", "error"}:
+        zeroclaw_status = "failing"
+
+    openai_status = provider_statuses.get("openai") or {}
+    claude_status = provider_statuses.get("claude") or {}
+    gemini_status = provider_statuses.get("gemini") or {}
+    openclaw_status = provider_statuses.get("openclaw") or {}
+
+    accounts: dict[str, dict[str, Any]] = {
+        "github": {
+            "provider": "github",
+            "required": True,
+            "enabled": github_enabled,
+            "credential_present": github_token_present,
+            "endpoint": _safe_endpoint_marker(os.getenv("GITHUB_API_URL", "https://api.github.com")),
+            "identity_marker": configured_repo,
+            "org_project_marker": configured_repo,
+            "verification_status": github_status,
+            "verification_passed": github_status == "passing",
+            "reason": github_reason,
+            "mismatch": not github_repo_match,
+            "expected_repo": expected_repo,
+            "configured_repo": configured_repo,
+        },
+        "openai": {
+            "provider": "openai",
+            "required": False,
+            "enabled": bool(openai_status.get("enabled")),
+            "credential_present": bool(openai_status.get("configured")),
+            "endpoint": _safe_endpoint_marker(os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")),
+            "identity_marker": _coalesce_marker(os.getenv("OPENAI_PROJECT_ID"), os.getenv("OPENAI_ORG_ID"), str(openai_status.get("model") or "")),
+            "org_project_marker": _coalesce_marker(os.getenv("OPENAI_PROJECT_ID"), os.getenv("OPENAI_ORG_ID")),
+            "verification_status": "passing" if bool(openai_status.get("available")) else ("warning" if not bool(openai_status.get("enabled")) else "failing"),
+            "verification_passed": bool(openai_status.get("available")) or not bool(openai_status.get("enabled")),
+            "reason": "" if bool(openai_status.get("available")) else ("provider disabled" if not bool(openai_status.get("enabled")) else "credential missing"),
+            "mismatch": False,
+        },
+        "claude": {
+            "provider": "claude",
+            "required": False,
+            "enabled": bool(claude_status.get("enabled")),
+            "credential_present": bool(claude_status.get("configured")),
+            "endpoint": _safe_endpoint_marker(os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1")),
+            "identity_marker": _coalesce_marker(os.getenv("ANTHROPIC_WORKSPACE_ID"), os.getenv("ANTHROPIC_ORG_ID"), str(claude_status.get("model") or "")),
+            "org_project_marker": _coalesce_marker(os.getenv("ANTHROPIC_WORKSPACE_ID"), os.getenv("ANTHROPIC_ORG_ID")),
+            "verification_status": "passing" if bool(claude_status.get("available")) else ("warning" if not bool(claude_status.get("enabled")) else "failing"),
+            "verification_passed": bool(claude_status.get("available")) or not bool(claude_status.get("enabled")),
+            "reason": "" if bool(claude_status.get("available")) else ("provider disabled" if not bool(claude_status.get("enabled")) else "credential missing"),
+            "mismatch": False,
+        },
+        "gemini": {
+            "provider": "gemini",
+            "required": False,
+            "enabled": bool(gemini_status.get("enabled")),
+            "credential_present": bool(gemini_status.get("configured")),
+            "endpoint": _safe_endpoint_marker(os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com")),
+            "identity_marker": _coalesce_marker(os.getenv("GOOGLE_CLOUD_PROJECT"), os.getenv("GEMINI_PROJECT_ID"), str(gemini_status.get("model") or "")),
+            "org_project_marker": _coalesce_marker(os.getenv("GOOGLE_CLOUD_PROJECT"), os.getenv("GEMINI_PROJECT_ID")),
+            "verification_status": "passing" if bool(gemini_status.get("available")) else ("warning" if not bool(gemini_status.get("enabled")) else "failing"),
+            "verification_passed": bool(gemini_status.get("available")) or not bool(gemini_status.get("enabled")),
+            "reason": "" if bool(gemini_status.get("available")) else ("provider disabled" if not bool(gemini_status.get("enabled")) else "credential missing"),
+            "mismatch": False,
+        },
+        "zeroclaw": {
+            "provider": "zeroclaw",
+            "required": True,
+            "enabled": zeroclaw_enabled,
+            "credential_present": True,
+            "endpoint": _safe_endpoint_marker(os.getenv("ZEROCLAW_API_URL", "")),
+            "identity_marker": zeroclaw_marker,
+            "org_project_marker": _coalesce_marker(os.getenv("ZEROCLAW_WORKSPACE"), os.getenv("ZEROCLAW_PROJECT")),
+            "verification_status": zeroclaw_status,
+            "verification_passed": zeroclaw_status == "passing",
+            "reason": zeroclaw_reason,
+            "mismatch": False,
+        },
+        "openclaw": {
+            "provider": "openclaw",
+            "required": True,
+            "enabled": bool(openclaw_status.get("enabled")),
+            "credential_present": bool(openclaw_status.get("configured")),
+            "endpoint": _safe_endpoint_marker(os.getenv("OPENCLAW_API_URL", "")),
+            "identity_marker": _coalesce_marker(os.getenv("OPENCLAW_WORKSPACE_ID"), os.getenv("OPENCLAW_ACCOUNT_MARKER"), str(openclaw_status.get("model") or "")),
+            "org_project_marker": _coalesce_marker(os.getenv("OPENCLAW_WORKSPACE_ID"), os.getenv("OPENCLAW_ACCOUNT_MARKER")),
+            "verification_status": "passing" if bool(openclaw_status.get("available")) else "failing",
+            "verification_passed": bool(openclaw_status.get("available")),
+            "reason": "" if bool(openclaw_status.get("available")) else ("provider disabled" if not bool(openclaw_status.get("enabled")) else "endpoint missing"),
+            "mismatch": False,
+        },
+    }
+
+    required_accounts = sorted(REQUIRED_ACCOUNTS)
+    failed_required_accounts = sorted(
+        key
+        for key in required_accounts
+        if not bool((accounts.get(key) or {}).get("verification_passed"))
+    )
+
+    require_github = _as_bool_env("PROVIDER_REQUIRE_GITHUB_FOR_EXECUTION", True)
+    if require_github_for_execution is not None:
+        require_github = bool(require_github_for_execution)
+    execution_required_accounts = {"zeroclaw", provider}
+    if require_github:
+        execution_required_accounts.add("github")
+    failed_execution_accounts = sorted(
+        key
+        for key in execution_required_accounts
+        if not bool((accounts.get(key) or {}).get("verification_passed"))
+    )
+    return {
+        "task_class": normalized_task_class,
+        "selected_lane": lane,
+        "selected_provider": provider,
+        "providers": provider_statuses,
+        "accounts": accounts,
+        "required_accounts": required_accounts,
+        "execution_required_accounts": sorted(execution_required_accounts),
+        "failed_required_accounts": failed_required_accounts,
+        "failed_execution_accounts": failed_execution_accounts,
+        "required_verification_passed": not bool(failed_required_accounts),
+        "execution_ready": not bool(failed_execution_accounts),
+        "github_expected_repo": expected_repo,
+        "github_configured_repo": configured_repo,
+        "github_repo_match": github_repo_match,
     }
 
 
@@ -251,13 +466,26 @@ def execute_provider_task(
     resolved = resolve_provider_for_task(task_class=task_class, requested_lane=requested_lane)
     provider = str(resolved["provider"])
     lane = str(resolved["lane"])
+    prompt_text = str(prompt or "").strip()
+    if not prompt_text:
+        raise ProviderExecutionError("prompt is required", code="prompt_required")
+    account_verification = collect_provider_account_verification(
+        task_class=task_class,
+        requested_lane=requested_lane,
+        selected_lane=lane,
+        selected_provider=provider,
+    )
+    if not bool(account_verification.get("execution_ready")):
+        failed_accounts = ", ".join(account_verification.get("failed_execution_accounts") or [])
+        reason = failed_accounts or "required account verification failed"
+        raise ProviderExecutionError(
+            f"Provider account verification failed: {reason}",
+            code="account_verification_failed",
+        )
     statuses = list_provider_statuses()
     provider_status = statuses[provider]
     model = str(provider_status.get("model") or "").strip()
     timeout = httpx.Timeout(30.0, connect=5.0)
-    prompt_text = str(prompt or "").strip()
-    if not prompt_text:
-        raise ProviderExecutionError("prompt is required", code="prompt_required")
 
     response_payload: dict[str, Any]
     try:
@@ -355,4 +583,10 @@ def execute_provider_task(
         "fallback_used": bool(resolved.get("fallback_used")),
         "fallback_reason": str(resolved.get("fallback_reason") or ""),
         "required_verification_lane": "openclaw",
+        "account_verification": {
+            "execution_ready": bool(account_verification.get("execution_ready")),
+            "failed_execution_accounts": account_verification.get("failed_execution_accounts") or [],
+            "required_verification_passed": bool(account_verification.get("required_verification_passed")),
+            "failed_required_accounts": account_verification.get("failed_required_accounts") or [],
+        },
     }

@@ -158,6 +158,20 @@ class BuildIntakeEndpointTests(unittest.TestCase):
         self.assertEqual(kwargs["actor"], "moe")
         self.assertEqual(kwargs["command_class"], "codex")
 
+    def test_execution_start_endpoint_returns_bad_request_when_account_verification_fails(self):
+        with patch("app.main.start_build_execution_run", side_effect=ValueError("Provider account verification failed: github")):
+            with self.assertRaises(HTTPException) as context:
+                main.build_intake_execution_start_endpoint(
+                    "build-1",
+                    main.BuildExecutionStartRequest(
+                        actor="moe",
+                        command_class="codex",
+                        target_scope="services/api",
+                        summary="start implementation",
+                    ),
+                )
+        self.assertEqual(context.exception.status_code, 400)
+
     def test_execution_complete_endpoint(self):
         with patch(
             "app.main.complete_build_execution_run",
@@ -353,6 +367,23 @@ class BuildIntakeRecommendationTests(unittest.TestCase):
             )
         self.assertFalse(result["ready"])
         self.assertIn("openclaw_verification_missing_or_failed", result["reasons"])
+
+    def test_github_merge_readiness_blocks_when_openclaw_unavailable(self):
+        with patch("app.build_intake_service.is_openclaw_available", return_value=False):
+            result = build_intake_service.evaluate_github_merge_readiness(
+                proof_status="passed",
+                verification_state="passed",
+                verification_required=True,
+                openclaw_verification_status="passed",
+                github_sync={
+                    "pr_state": "open",
+                    "mergeability_summary": "CLEAN",
+                    "checks_status": "passing",
+                    "review_status": "approved",
+                },
+            )
+        self.assertFalse(result["ready"])
+        self.assertIn("openclaw_unavailable", result["reasons"])
 
     def test_generate_pr_body_includes_required_sections(self):
         row = {

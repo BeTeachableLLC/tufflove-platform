@@ -14,6 +14,7 @@ from app.db import connect
 from app.model_router_service import get_model_router_decision, list_model_router_decision_events
 from app.mission_history_service import get_familyops_mission
 from app.provider_adapter_service import (
+    collect_provider_account_verification,
     is_openclaw_available,
     resolve_provider_for_task,
 )
@@ -1371,16 +1372,18 @@ def get_build_request(build_request_id: str, *, include_timeline: bool = True) -
     if include_timeline:
         timeline: list[dict[str, Any]] = []
         for event in list_build_events(build_request_id):
+            event_metadata = event.get("metadata") or {}
+            event_status = str((event_metadata or {}).get("status") or "ok")
             timeline.append(
                 {
                     "at": event["at"],
                     "event_type": event["event_type"],
-                    "status": "ok",
+                    "status": event_status,
                     "detail": event["detail"],
                     "metadata": {
                         "source": "build_intake",
                         "created_by": event.get("created_by"),
-                        **(event.get("metadata") or {}),
+                        **event_metadata,
                     },
                 }
             )
@@ -1746,6 +1749,34 @@ def start_build_execution_run(
             "fallback_used": False,
             "fallback_reason": str(error),
         }
+    account_verification = collect_provider_account_verification(
+        task_class=normalized_task_class,
+        requested_lane=requested_lane,
+        selected_lane=str(provider_resolution.get("lane") or requested_lane or "codex"),
+        selected_provider=str(provider_resolution.get("provider") or "openai"),
+    )
+    failed_accounts = list(account_verification.get("failed_execution_accounts") or [])
+    record_build_event(
+        build_request_id=build_request_id,
+        tenant_id=row["tenant_id"],
+        event_type="account_verification",
+        detail="Provider account verification passed" if not failed_accounts else "Provider account verification failed",
+        metadata={
+            "status": "ok" if not failed_accounts else "failed",
+            "task_class": normalized_task_class,
+            "requested_lane": requested_lane,
+            "selected_provider": account_verification.get("selected_provider"),
+            "required_accounts": account_verification.get("execution_required_accounts") or [],
+            "failed_accounts": failed_accounts,
+            "github_expected_repo": account_verification.get("github_expected_repo"),
+            "github_configured_repo": account_verification.get("github_configured_repo"),
+            "github_repo_match": bool(account_verification.get("github_repo_match")),
+        },
+        created_by=actor,
+    )
+    if failed_accounts:
+        failed_text = ", ".join(failed_accounts)
+        raise ValueError(f"Provider account verification failed: {failed_text}")
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1803,6 +1834,8 @@ def start_build_execution_run(
             "provider_fallback_used": bool(provider_resolution.get("fallback_used")),
             "provider_fallback_reason": str(provider_resolution.get("fallback_reason") or ""),
             "target_scope": str(target_scope or "").strip(),
+            "account_verification_status": "ok",
+            "account_verification_failed_accounts": [],
         },
         created_by=actor,
     )

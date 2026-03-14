@@ -74,6 +74,36 @@ class ProviderAdapterRoutingTests(unittest.TestCase):
                 provider_adapter_service.resolve_provider_for_task(task_class="verify", requested_lane=None)
         self.assertEqual(context.exception.code, "openclaw_unavailable")
 
+    def test_account_verification_flags_github_repo_mismatch(self):
+        with (
+            patch(
+                "app.provider_adapter_service.list_provider_statuses",
+                return_value={
+                    "openai": {"enabled": True, "configured": True, "available": True, "model": "gpt-5-codex"},
+                    "claude": {"enabled": True, "configured": True, "available": True, "model": "claude"},
+                    "gemini": {"enabled": True, "configured": True, "available": True, "model": "gemini"},
+                    "openclaw": {"enabled": True, "configured": True, "available": True, "model": "openclaw-verify"},
+                },
+            ),
+            patch("app.provider_adapter_service._resolve_zeroclaw_runtime_marker", return_value=("zeroclaw:test", "")),
+            patch(
+                "app.provider_adapter_service.os.getenv",
+                side_effect=lambda name, default=None: {
+                    "GITHUB_TOKEN": "gh-token",
+                    "GITHUB_REPO": "other-org/wrong-repo",
+                    "GITHUB_EXPECTED_REPO": "BeTeachableLLC/tufflove-platform",
+                }.get(name, default),
+            ),
+        ):
+            verification = provider_adapter_service.collect_provider_account_verification(
+                task_class="implement",
+                requested_lane="codex",
+            )
+
+        self.assertFalse(verification["github_repo_match"])
+        self.assertFalse(verification["execution_ready"])
+        self.assertIn("github", verification["failed_execution_accounts"])
+
 
 class ProviderAdapterExecutionTests(unittest.TestCase):
     def test_execute_openai_missing_key_fails_with_provider_unavailable(self):
@@ -87,6 +117,15 @@ class ProviderAdapterExecutionTests(unittest.TestCase):
                     "fallback_used": False,
                     "fallback_reason": "",
                     "required_verification_lane": "openclaw",
+                },
+            ),
+            patch(
+                "app.provider_adapter_service.collect_provider_account_verification",
+                return_value={
+                    "execution_ready": True,
+                    "failed_execution_accounts": [],
+                    "required_verification_passed": True,
+                    "failed_required_accounts": [],
                 },
             ),
             patch("app.provider_adapter_service.list_provider_statuses", return_value={"openai": {"model": "gpt-5-codex"}}),
@@ -105,6 +144,37 @@ class ProviderAdapterExecutionTests(unittest.TestCase):
             provider_adapter_service.execute_provider_task(task_class="implement", prompt="   ")
         self.assertEqual(context.exception.code, "prompt_required")
 
+    def test_execute_provider_task_blocks_when_account_verification_fails(self):
+        with (
+            patch(
+                "app.provider_adapter_service.resolve_provider_for_task",
+                return_value={
+                    "task_class": "implement",
+                    "lane": "codex",
+                    "provider": "openai",
+                    "fallback_used": False,
+                    "fallback_reason": "",
+                    "required_verification_lane": "openclaw",
+                },
+            ),
+            patch(
+                "app.provider_adapter_service.collect_provider_account_verification",
+                return_value={
+                    "execution_ready": False,
+                    "failed_execution_accounts": ["github"],
+                    "required_verification_passed": False,
+                    "failed_required_accounts": ["github"],
+                },
+            ),
+        ):
+            with self.assertRaises(provider_adapter_service.ProviderExecutionError) as context:
+                provider_adapter_service.execute_provider_task(
+                    task_class="implement",
+                    prompt="implement this",
+                    requested_lane="codex",
+                )
+        self.assertEqual(context.exception.code, "account_verification_failed")
+
     def test_execute_openclaw_returns_normalized_shape(self):
         mock_response = Mock()
         mock_response.status_code = 200
@@ -115,6 +185,15 @@ class ProviderAdapterExecutionTests(unittest.TestCase):
 
         with (
             patch("app.provider_adapter_service.resolve_provider_for_task", return_value={"task_class": "verify", "lane": "openclaw", "provider": "openclaw", "fallback_used": False, "fallback_reason": "", "required_verification_lane": "openclaw"}),
+            patch(
+                "app.provider_adapter_service.collect_provider_account_verification",
+                return_value={
+                    "execution_ready": True,
+                    "failed_execution_accounts": [],
+                    "required_verification_passed": True,
+                    "failed_required_accounts": [],
+                },
+            ),
             patch("app.provider_adapter_service.list_provider_statuses", return_value={"openclaw": {"model": "openclaw-verify"}}),
             patch("app.provider_adapter_service.httpx.Client") as mock_httpx_client,
             patch("app.provider_adapter_service.os.getenv") as mock_getenv,

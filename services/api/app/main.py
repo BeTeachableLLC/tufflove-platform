@@ -95,6 +95,7 @@ from app.trigger_service import (
     run_due_triggers,
 )
 from app.provider_adapter_service import (
+    collect_provider_account_verification,
     execute_provider_task,
     list_provider_statuses,
 )
@@ -1184,8 +1185,19 @@ def model_router_decision_events_endpoint(decision_id: str, limit: int = 300):
 @app.get("/v1/providers/status", dependencies=[Depends(require_admin)])
 def provider_status_endpoint():
     statuses = list_provider_statuses()
+    verification = collect_provider_account_verification()
     return {
         "providers": statuses,
+        "accounts": verification.get("accounts") or {},
+        "required_accounts": verification.get("required_accounts") or [],
+        "execution_required_accounts": verification.get("execution_required_accounts") or [],
+        "required_verification_passed": bool(verification.get("required_verification_passed")),
+        "execution_ready": bool(verification.get("execution_ready")),
+        "failed_required_accounts": verification.get("failed_required_accounts") or [],
+        "failed_execution_accounts": verification.get("failed_execution_accounts") or [],
+        "github_expected_repo": verification.get("github_expected_repo"),
+        "github_configured_repo": verification.get("github_configured_repo"),
+        "github_repo_match": bool(verification.get("github_repo_match")),
         "openclaw_required_for_verification": True,
         "openclaw_available": bool((statuses.get("openclaw") or {}).get("available")),
     }
@@ -1319,16 +1331,19 @@ def build_intake_pr_draft_endpoint(build_request_id: str, body: BuildPrDraftRequ
 
 @app.post("/v1/build/intake/{build_request_id}/execution/start", dependencies=[Depends(require_admin)])
 def build_intake_execution_start_endpoint(build_request_id: str, body: BuildExecutionStartRequest):
-    request = start_build_execution_run(
-        build_request_id,
-        actor=body.actor.strip() or "admin",
-        command_class=body.command_class,
-        task_class=body.task_class,
-        target_scope=body.target_scope,
-        summary=body.summary,
-        router_decision_id=body.router_decision_id,
-        mission_id=body.mission_id,
-    )
+    try:
+        request = start_build_execution_run(
+            build_request_id,
+            actor=body.actor.strip() or "admin",
+            command_class=body.command_class,
+            task_class=body.task_class,
+            target_scope=body.target_scope,
+            summary=body.summary,
+            router_decision_id=body.router_decision_id,
+            mission_id=body.mission_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     if request is None:
         raise HTTPException(status_code=404, detail="Build request not found")
     return {"ok": True, "request": request}
