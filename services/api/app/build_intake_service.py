@@ -20,10 +20,30 @@ BUILD_STAGES = {
     "verification_requested",
     "pr_drafted",
     "approval_pending",
+    "ready_for_pr_review",
     "ready_for_merge",
+    "revise_before_pr",
     "rejected",
     "rerun_requested",
 }
+EXECUTION_RUN_STATUSES = {"running", "passed", "failed", "error", "cancelled"}
+PROOF_STATUSES = {"unknown", "passed", "failed"}
+VERIFICATION_STATES = {"not_required", "pending", "passed", "failed"}
+RECOMMENDATIONS = {
+    "needs_execution",
+    "verification_requested",
+    "ready_for_pr_review",
+    "approval_pending",
+    "revise_before_pr",
+}
+SENSITIVE_PATTERNS = [
+    re.compile(r"(?i)(access[_-]?token\s*[=:]\s*)([^\s,;]+)"),
+    re.compile(r"(?i)(refresh[_-]?token\s*[=:]\s*)([^\s,;]+)"),
+    re.compile(r"(?i)(api[_-]?key\s*[=:]\s*)([^\s,;]+)"),
+    re.compile(r"(?i)(authorization\s*[=:]\s*)([^\s,;]+)"),
+    re.compile(r"(?i)(password\s*[=:]\s*)([^\s,;]+)"),
+    re.compile(r"(?i)(secret\s*[=:]\s*)([^\s,;]+)"),
+]
 
 _SAFE_BRANCH_CHARS = re.compile(r"[^a-z0-9._/-]+")
 _MULTI_DASH = re.compile(r"-{2,}")
@@ -54,6 +74,69 @@ def _normalize_stage(raw: str, *, default: str = "intake") -> str:
     if candidate not in BUILD_STAGES:
         return default
     return candidate
+
+
+def _normalize_execution_status(raw: str, *, default: str = "running") -> str:
+    candidate = str(raw or default).strip().lower()
+    if candidate not in EXECUTION_RUN_STATUSES:
+        return default
+    return candidate
+
+
+def _normalize_proof_status(raw: str, *, default: str = "unknown") -> str:
+    candidate = str(raw or default).strip().lower()
+    if candidate not in PROOF_STATUSES:
+        return default
+    return candidate
+
+
+def _normalize_verification_state(raw: str, *, default: str = "not_required") -> str:
+    candidate = str(raw or default).strip().lower()
+    if candidate not in VERIFICATION_STATES:
+        return default
+    return candidate
+
+
+def _sanitize_output_excerpt(text: str | None, *, max_len: int = 3000) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+    redacted = raw
+    for pattern in SENSITIVE_PATTERNS:
+        redacted = pattern.sub(r"\1[REDACTED]", redacted)
+    if len(redacted) > max_len:
+        return redacted[:max_len]
+    return redacted
+
+
+def compute_recommendation(
+    *,
+    proof_status: str,
+    verification_state: str,
+    verification_required: bool,
+    has_pr_draft: bool,
+) -> dict[str, str]:
+    normalized_proof = _normalize_proof_status(proof_status)
+    normalized_verification = _normalize_verification_state(verification_state)
+
+    if normalized_proof == "failed":
+        return {"stage": "revise_before_pr", "recommendation": "revise_before_pr"}
+
+    if normalized_proof == "unknown":
+        return {"stage": "tests_run", "recommendation": "needs_execution"}
+
+    if verification_required:
+        if normalized_verification == "failed":
+            return {"stage": "revise_before_pr", "recommendation": "revise_before_pr"}
+        if normalized_verification == "pending":
+            return {"stage": "verification_requested", "recommendation": "verification_requested"}
+        if normalized_verification == "not_required":
+            normalized_verification = "pending"
+            return {"stage": "verification_requested", "recommendation": "verification_requested"}
+
+    if has_pr_draft:
+        return {"stage": "approval_pending", "recommendation": "approval_pending"}
+    return {"stage": "ready_for_pr_review", "recommendation": "ready_for_pr_review"}
 
 
 def _safe_branch_slug(value: str) -> str:
@@ -93,6 +176,12 @@ def _serialize_build_request(row: dict[str, Any]) -> dict[str, Any]:
         "proof_summary": row["proof_summary"],
         "test_summary": row["test_summary"],
         "files_changed_summary": row["files_changed_summary"],
+        "proof_status": row["proof_status"],
+        "verification_state": row["verification_state"],
+        "recommendation": row["recommendation"],
+        "latest_execution_run_id": row["latest_execution_run_id"],
+        "failure_note": row["failure_note"],
+        "rollback_note": row["rollback_note"],
         "created_by": row["created_by"],
         "created_at": _to_iso(row["created_at"]),
         "updated_at": _to_iso(row["updated_at"]),
@@ -126,6 +215,32 @@ def _serialize_event(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _serialize_execution_run(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "build_request_id": row["build_request_id"],
+        "tenant_id": row["tenant_id"],
+        "router_decision_id": row["router_decision_id"],
+        "mission_id": row["mission_id"],
+        "command_class": row["command_class"],
+        "target_scope": row["target_scope"],
+        "status": row["status"],
+        "summary": row["summary"],
+        "lint_build_summary": row["lint_build_summary"],
+        "test_summary": row["test_summary"],
+        "changed_files_summary": row["changed_files_summary"],
+        "execution_output_excerpt": row["execution_output_excerpt"],
+        "proof_status": row["proof_status"],
+        "failure_note": row["failure_note"],
+        "rollback_note": row["rollback_note"],
+        "started_at": _to_iso(row["started_at"]),
+        "finished_at": _to_iso(row["finished_at"]),
+        "created_by": row["created_by"],
+        "created_at": _to_iso(row["created_at"]),
+        "updated_at": _to_iso(row["updated_at"]),
+    }
+
+
 def init_build_intake_tables() -> None:
     with connect() as conn:
         with conn.cursor() as cur:
@@ -149,10 +264,52 @@ def init_build_intake_tables() -> None:
                     proof_summary text NOT NULL DEFAULT '',
                     test_summary text NOT NULL DEFAULT '',
                     files_changed_summary text NOT NULL DEFAULT '',
+                    proof_status text NOT NULL DEFAULT 'unknown',
+                    verification_state text NOT NULL DEFAULT 'not_required',
+                    recommendation text NOT NULL DEFAULT 'needs_execution',
+                    latest_execution_run_id text,
+                    failure_note text NOT NULL DEFAULT '',
+                    rollback_note text NOT NULL DEFAULT '',
                     created_by text NOT NULL DEFAULT 'admin',
                     created_at timestamptz NOT NULL DEFAULT now(),
                     updated_at timestamptz NOT NULL DEFAULT now()
                 );
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS proof_status text NOT NULL DEFAULT 'unknown';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS verification_state text NOT NULL DEFAULT 'not_required';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS recommendation text NOT NULL DEFAULT 'needs_execution';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS latest_execution_run_id text;
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS failure_note text NOT NULL DEFAULT '';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS rollback_note text NOT NULL DEFAULT '';
                 """
             )
             cur.execute(
@@ -165,6 +322,12 @@ def init_build_intake_tables() -> None:
                 """
                 CREATE INDEX IF NOT EXISTS idx_build_requests_stage
                 ON build_requests (tenant_id, stage, updated_at DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_build_requests_recommendation
+                ON build_requests (tenant_id, recommendation, updated_at DESC);
                 """
             )
             cur.execute(
@@ -214,6 +377,45 @@ def init_build_intake_tables() -> None:
                 ON build_request_events (tenant_id, created_at DESC);
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS build_execution_runs(
+                    id text PRIMARY KEY,
+                    build_request_id text NOT NULL REFERENCES build_requests(id) ON DELETE CASCADE,
+                    tenant_id text NOT NULL,
+                    router_decision_id text,
+                    mission_id text,
+                    command_class text NOT NULL DEFAULT '',
+                    target_scope text NOT NULL DEFAULT '',
+                    status text NOT NULL DEFAULT 'running',
+                    summary text NOT NULL DEFAULT '',
+                    lint_build_summary text NOT NULL DEFAULT '',
+                    test_summary text NOT NULL DEFAULT '',
+                    changed_files_summary text NOT NULL DEFAULT '',
+                    execution_output_excerpt text NOT NULL DEFAULT '',
+                    proof_status text NOT NULL DEFAULT 'unknown',
+                    failure_note text NOT NULL DEFAULT '',
+                    rollback_note text NOT NULL DEFAULT '',
+                    started_at timestamptz NOT NULL DEFAULT now(),
+                    finished_at timestamptz,
+                    created_by text NOT NULL DEFAULT 'admin',
+                    created_at timestamptz NOT NULL DEFAULT now(),
+                    updated_at timestamptz NOT NULL DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_build_execution_runs_request
+                ON build_execution_runs (build_request_id, created_at DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_build_execution_runs_tenant
+                ON build_execution_runs (tenant_id, created_at DESC);
+                """
+            )
         conn.commit()
 
 
@@ -240,6 +442,12 @@ def _get_build_request_row(build_request_id: str) -> dict[str, Any] | None:
                     proof_summary,
                     test_summary,
                     files_changed_summary,
+                    proof_status,
+                    verification_state,
+                    recommendation,
+                    latest_execution_run_id,
+                    failure_note,
+                    rollback_note,
                     created_by,
                     created_at,
                     updated_at
@@ -310,6 +518,118 @@ def list_build_events(build_request_id: str, *, limit: int = 500) -> list[dict[s
             )
             rows = cur.fetchall()
     return [_serialize_event(row) for row in rows]
+
+
+def _get_execution_run_row(run_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    build_request_id,
+                    tenant_id,
+                    router_decision_id,
+                    mission_id,
+                    command_class,
+                    target_scope,
+                    status,
+                    summary,
+                    lint_build_summary,
+                    test_summary,
+                    changed_files_summary,
+                    execution_output_excerpt,
+                    proof_status,
+                    failure_note,
+                    rollback_note,
+                    started_at,
+                    finished_at,
+                    created_by,
+                    created_at,
+                    updated_at
+                FROM build_execution_runs
+                WHERE id = %s;
+                """,
+                (run_id,),
+            )
+            return cur.fetchone()
+
+
+def list_execution_runs(build_request_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = min(max(int(limit), 1), 500)
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    build_request_id,
+                    tenant_id,
+                    router_decision_id,
+                    mission_id,
+                    command_class,
+                    target_scope,
+                    status,
+                    summary,
+                    lint_build_summary,
+                    test_summary,
+                    changed_files_summary,
+                    execution_output_excerpt,
+                    proof_status,
+                    failure_note,
+                    rollback_note,
+                    started_at,
+                    finished_at,
+                    created_by,
+                    created_at,
+                    updated_at
+                FROM build_execution_runs
+                WHERE build_request_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s;
+                """,
+                (build_request_id, safe_limit),
+            )
+            rows = cur.fetchall()
+    return [_serialize_execution_run(row) for row in rows]
+
+
+def _build_has_pr_link(row: dict[str, Any]) -> bool:
+    pr_url = str(row.get("pr_url") or "").strip()
+    pr_number = str(row.get("pr_number") or "").strip()
+    return bool(pr_url or pr_number)
+
+
+def _resolve_verification_required(
+    row: dict[str, Any],
+    *,
+    request_verification: bool = False,
+    verification_required_override: bool | None = None,
+) -> bool:
+    if verification_required_override is not None:
+        required = bool(verification_required_override)
+    else:
+        required = bool(row.get("sensitive_change"))
+        decision_id = str(row.get("router_decision_id") or "").strip()
+        if decision_id:
+            decision = get_model_router_decision(decision_id, include_events=False)
+            if isinstance(decision, dict) and bool(decision.get("verification_required")):
+                required = True
+    if request_verification:
+        required = True
+    return required
+
+
+def _infer_execution_proof_status(*, execution_status: str, proof_status: str | None) -> str:
+    normalized = _normalize_proof_status(proof_status or "unknown")
+    normalized_status = _normalize_execution_status(execution_status)
+    if normalized != "unknown":
+        return normalized
+    if normalized_status == "passed":
+        return "passed"
+    if normalized_status in {"failed", "error", "cancelled"}:
+        return "failed"
+    return "unknown"
 
 
 def create_build_request(
@@ -423,6 +743,12 @@ def list_build_requests(
                     proof_summary,
                     test_summary,
                     files_changed_summary,
+                    proof_status,
+                    verification_state,
+                    recommendation,
+                    latest_execution_run_id,
+                    failure_note,
+                    rollback_note,
                     created_by,
                     created_at,
                     updated_at
@@ -477,6 +803,7 @@ def get_build_request(build_request_id: str, *, include_timeline: bool = True) -
 
     request = _serialize_build_request(row)
     request["branches"] = _list_branch_records(build_request_id)
+    request["execution_runs"] = list_execution_runs(build_request_id, limit=200)
 
     if include_timeline:
         timeline: list[dict[str, Any]] = []
@@ -554,6 +881,12 @@ def _update_build_request(
     proof_summary: str | None = None,
     test_summary: str | None = None,
     files_changed_summary: str | None = None,
+    proof_status: str | None = None,
+    verification_state: str | None = None,
+    recommendation: str | None = None,
+    latest_execution_run_id: str | None = None,
+    failure_note: str | None = None,
+    rollback_note: str | None = None,
 ) -> None:
     fields: list[str] = []
     values: list[Any] = []
@@ -584,6 +917,27 @@ def _update_build_request(
     if files_changed_summary is not None:
         fields.append("files_changed_summary = %s")
         values.append(files_changed_summary)
+    if proof_status is not None:
+        fields.append("proof_status = %s")
+        values.append(_normalize_proof_status(proof_status))
+    if verification_state is not None:
+        fields.append("verification_state = %s")
+        values.append(_normalize_verification_state(verification_state))
+    if recommendation is not None:
+        candidate_recommendation = str(recommendation or "").strip().lower()
+        if candidate_recommendation not in RECOMMENDATIONS:
+            candidate_recommendation = "needs_execution"
+        fields.append("recommendation = %s")
+        values.append(candidate_recommendation)
+    if latest_execution_run_id is not None:
+        fields.append("latest_execution_run_id = %s")
+        values.append(str(latest_execution_run_id or "").strip() or None)
+    if failure_note is not None:
+        fields.append("failure_note = %s")
+        values.append(str(failure_note or "").strip())
+    if rollback_note is not None:
+        fields.append("rollback_note = %s")
+        values.append(str(rollback_note or "").strip())
     if not fields:
         return
 
@@ -726,14 +1080,23 @@ def save_pr_draft_metadata(
     if row is None:
         return None
 
+    verification_required = _resolve_verification_required(row)
+    recommendation_update = compute_recommendation(
+        proof_status=str(row.get("proof_status") or "unknown"),
+        verification_state=str(row.get("verification_state") or "not_required"),
+        verification_required=verification_required,
+        has_pr_draft=True,
+    )
+
     _update_build_request(
         build_request_id,
-        stage=stage,
+        stage=recommendation_update["stage"] if row.get("proof_status") not in {None, "", "unknown"} else stage,
         pr_url=str(pr_url or "").strip() or None,
         pr_number=str(pr_number or "").strip() or None,
         proof_summary=str(proof_summary or "").strip(),
         test_summary=str(test_summary or "").strip(),
         files_changed_summary=str(files_changed_summary or "").strip(),
+        recommendation=recommendation_update["recommendation"],
     )
     record_build_event(
         build_request_id=build_request_id,
@@ -746,6 +1109,251 @@ def save_pr_draft_metadata(
             "proof_summary": proof_summary,
             "test_summary": test_summary,
             "files_changed_summary": files_changed_summary,
+        },
+        created_by=actor,
+    )
+    return get_build_request(build_request_id)
+
+
+def start_build_execution_run(
+    build_request_id: str,
+    *,
+    actor: str,
+    command_class: str,
+    target_scope: str,
+    summary: str = "",
+    router_decision_id: str | None = None,
+    mission_id: str | None = None,
+) -> dict[str, Any] | None:
+    row = _get_build_request_row(build_request_id)
+    if row is None:
+        return None
+
+    run_id = str(uuid4())
+    effective_router_decision_id = str(router_decision_id or row.get("router_decision_id") or "").strip() or None
+    effective_mission_id = str(mission_id or row.get("mission_id") or "").strip() or None
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO build_execution_runs(
+                    id,
+                    build_request_id,
+                    tenant_id,
+                    router_decision_id,
+                    mission_id,
+                    command_class,
+                    target_scope,
+                    status,
+                    summary,
+                    proof_status,
+                    created_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'running', %s, 'unknown', %s);
+                """,
+                (
+                    run_id,
+                    build_request_id,
+                    row["tenant_id"],
+                    effective_router_decision_id,
+                    effective_mission_id,
+                    str(command_class or "").strip(),
+                    str(target_scope or "").strip(),
+                    str(summary or "").strip(),
+                    str(actor or "").strip() or "admin",
+                ),
+            )
+        conn.commit()
+
+    _update_build_request(
+        build_request_id,
+        stage="implementation_started",
+        latest_execution_run_id=run_id,
+        recommendation="needs_execution",
+    )
+    record_build_event(
+        build_request_id=build_request_id,
+        tenant_id=row["tenant_id"],
+        event_type="implementation_started",
+        detail="Execution run started",
+        metadata={
+            "execution_run_id": run_id,
+            "command_class": str(command_class or "").strip(),
+            "target_scope": str(target_scope or "").strip(),
+        },
+        created_by=actor,
+    )
+    return get_build_request(build_request_id)
+
+
+def complete_build_execution_run(
+    build_request_id: str,
+    *,
+    run_id: str,
+    actor: str,
+    status: str,
+    summary: str = "",
+    lint_build_summary: str = "",
+    test_summary: str = "",
+    changed_files_summary: str = "",
+    execution_output_excerpt: str = "",
+    proof_status: str = "unknown",
+    request_verification: bool = False,
+    verification_required: bool | None = None,
+    failure_note: str = "",
+    rollback_note: str = "",
+) -> dict[str, Any] | None:
+    row = _get_build_request_row(build_request_id)
+    if row is None:
+        return None
+
+    run_row = _get_execution_run_row(run_id)
+    if run_row is None or run_row["build_request_id"] != build_request_id:
+        raise KeyError("Execution run not found")
+
+    normalized_status = _normalize_execution_status(status)
+    normalized_proof_status = _infer_execution_proof_status(
+        execution_status=normalized_status,
+        proof_status=proof_status,
+    )
+    sanitized_excerpt = _sanitize_output_excerpt(execution_output_excerpt)
+    effective_failure_note = str(failure_note or "").strip()
+    effective_rollback_note = str(rollback_note or "").strip()
+    effective_verification_required = _resolve_verification_required(
+        row,
+        request_verification=bool(request_verification),
+        verification_required_override=verification_required,
+    )
+
+    current_verification_state = str(row.get("verification_state") or "not_required")
+    if effective_verification_required:
+        if bool(request_verification):
+            next_verification_state = "pending"
+        else:
+            next_verification_state = _normalize_verification_state(current_verification_state, default="pending")
+            if next_verification_state == "not_required":
+                next_verification_state = "pending"
+    else:
+        next_verification_state = "not_required"
+
+    recommendation_update = compute_recommendation(
+        proof_status=normalized_proof_status,
+        verification_state=next_verification_state,
+        verification_required=effective_verification_required,
+        has_pr_draft=_build_has_pr_link(row),
+    )
+
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE build_execution_runs
+                SET
+                    status = %s,
+                    summary = %s,
+                    lint_build_summary = %s,
+                    test_summary = %s,
+                    changed_files_summary = %s,
+                    execution_output_excerpt = %s,
+                    proof_status = %s,
+                    failure_note = %s,
+                    rollback_note = %s,
+                    finished_at = now(),
+                    updated_at = now()
+                WHERE id = %s;
+                """,
+                (
+                    normalized_status,
+                    str(summary or "").strip(),
+                    str(lint_build_summary or "").strip(),
+                    str(test_summary or "").strip(),
+                    str(changed_files_summary or "").strip(),
+                    sanitized_excerpt,
+                    normalized_proof_status,
+                    effective_failure_note,
+                    effective_rollback_note,
+                    run_id,
+                ),
+            )
+        conn.commit()
+
+    _update_build_request(
+        build_request_id,
+        stage=recommendation_update["stage"],
+        proof_summary=str(lint_build_summary or summary or "").strip(),
+        test_summary=str(test_summary or "").strip(),
+        files_changed_summary=str(changed_files_summary or "").strip(),
+        proof_status=normalized_proof_status,
+        verification_state=next_verification_state,
+        recommendation=recommendation_update["recommendation"],
+        latest_execution_run_id=run_id,
+        failure_note=effective_failure_note,
+        rollback_note=effective_rollback_note,
+    )
+    record_build_event(
+        build_request_id=build_request_id,
+        tenant_id=row["tenant_id"],
+        event_type=recommendation_update["stage"],
+        detail="Execution proof ingested",
+        metadata={
+            "execution_run_id": run_id,
+            "status": normalized_status,
+            "proof_status": normalized_proof_status,
+            "verification_state": next_verification_state,
+            "recommendation": recommendation_update["recommendation"],
+            "request_verification": bool(request_verification),
+            "failure_note": effective_failure_note,
+            "rollback_note": effective_rollback_note,
+        },
+        created_by=actor,
+    )
+    return get_build_request(build_request_id)
+
+
+def set_build_verification_state(
+    build_request_id: str,
+    *,
+    actor: str,
+    verification_state: str,
+    detail: str = "",
+    verification_required: bool | None = None,
+) -> dict[str, Any] | None:
+    row = _get_build_request_row(build_request_id)
+    if row is None:
+        return None
+
+    normalized_verification_state = _normalize_verification_state(verification_state)
+    effective_verification_required = _resolve_verification_required(
+        row,
+        request_verification=normalized_verification_state == "pending",
+        verification_required_override=verification_required,
+    )
+    if not effective_verification_required:
+        normalized_verification_state = "not_required"
+    elif normalized_verification_state == "not_required":
+        normalized_verification_state = "pending"
+
+    recommendation_update = compute_recommendation(
+        proof_status=str(row.get("proof_status") or "unknown"),
+        verification_state=normalized_verification_state,
+        verification_required=effective_verification_required,
+        has_pr_draft=_build_has_pr_link(row),
+    )
+    _update_build_request(
+        build_request_id,
+        stage=recommendation_update["stage"],
+        verification_state=normalized_verification_state,
+        recommendation=recommendation_update["recommendation"],
+    )
+    record_build_event(
+        build_request_id=build_request_id,
+        tenant_id=row["tenant_id"],
+        event_type=recommendation_update["stage"],
+        detail=detail or f"Verification state set to {normalized_verification_state}",
+        metadata={
+            "verification_state": normalized_verification_state,
+            "verification_required": effective_verification_required,
+            "recommendation": recommendation_update["recommendation"],
         },
         created_by=actor,
     )
