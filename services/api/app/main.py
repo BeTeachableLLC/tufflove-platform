@@ -81,6 +81,7 @@ from app.build_intake_service import (
     sync_build_request_github_status,
     start_build_execution_run,
     transition_build_stage,
+    writeback_build_request_github_pr,
 )
 from app.trigger_service import (
     TRIGGER_TYPES,
@@ -389,6 +390,16 @@ class BuildGithubSyncRequest(BaseModel):
     actor: str = "admin"
     repo: str | None = None
     pr_number: str | None = None
+
+
+class BuildGithubWritebackRequest(BaseModel):
+    actor: str = "admin"
+    repo: str | None = None
+    head_branch: str | None = None
+    base_branch: str | None = None
+    title: str | None = None
+    body: str | None = None
+    draft: bool = True
 
 
 def tool_db_read(payload): return {"ok": True, "data": "db.read stub", "payload": payload}
@@ -1313,6 +1324,26 @@ def build_intake_github_sync_endpoint(build_request_id: str, body: BuildGithubSy
             actor=body.actor.strip() or "admin",
             repo=body.repo,
             pr_number=body.pr_number,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    if request is None:
+        raise HTTPException(status_code=404, detail="Build request not found")
+    return {"ok": True, "request": request}
+
+
+@app.post("/v1/build/intake/{build_request_id}/github-writeback", dependencies=[Depends(require_admin)])
+def build_intake_github_writeback_endpoint(build_request_id: str, body: BuildGithubWritebackRequest):
+    try:
+        request = writeback_build_request_github_pr(
+            build_request_id,
+            actor=body.actor.strip() or "admin",
+            repo=body.repo,
+            head_branch=body.head_branch,
+            base_branch=body.base_branch,
+            title=body.title,
+            body=body.body,
+            draft=bool(body.draft),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))

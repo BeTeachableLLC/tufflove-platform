@@ -222,6 +222,36 @@ class BuildIntakeEndpointTests(unittest.TestCase):
         self.assertEqual(kwargs["repo"], "BeTeachableLLC/tufflove-platform")
         self.assertEqual(kwargs["pr_number"], "22")
 
+    def test_github_writeback_endpoint(self):
+        with patch(
+            "app.main.writeback_build_request_github_pr",
+            return_value={
+                "id": "build-1",
+                "pr_number": "23",
+                "pr_url": "https://github.com/BeTeachableLLC/tufflove-platform/pull/23",
+                "github_writeback_status": "success",
+            },
+        ) as mock_writeback:
+            response = main.build_intake_github_writeback_endpoint(
+                "build-1",
+                main.BuildGithubWritebackRequest(
+                    actor="moe",
+                    repo="BeTeachableLLC/tufflove-platform",
+                    head_branch="build/my-branch-1234abcd",
+                    base_branch="main",
+                    title="build: writeback test",
+                    body="body",
+                    draft=True,
+                ),
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["request"]["github_writeback_status"], "success")
+        _, kwargs = mock_writeback.call_args
+        self.assertEqual(kwargs["repo"], "BeTeachableLLC/tufflove-platform")
+        self.assertEqual(kwargs["head_branch"], "build/my-branch-1234abcd")
+        self.assertTrue(kwargs["draft"])
+
 
 class BuildIntakeRecommendationTests(unittest.TestCase):
     def test_compute_recommendation_requires_execution_when_proof_unknown(self):
@@ -303,6 +333,27 @@ class BuildIntakeRecommendationTests(unittest.TestCase):
         self.assertIn("checks_not_passing", result["reasons"])
         self.assertIn("review_not_approved", result["reasons"])
 
+    def test_generate_pr_body_includes_required_sections(self):
+        row = {
+            "goal": "Implement GitHub writeback",
+            "scope_summary": "Create or update draft PR from build intake",
+            "constraints_json": {"no_publish_changes": True},
+            "proof_summary": "web build pass",
+            "test_summary": "api/worker tests pass",
+            "files_changed_summary": "5 files changed",
+            "recommendation": "ready_for_pr_review",
+            "failure_note": "none",
+            "rollback_note": "revert branch commit",
+        }
+        body = build_intake_service.generate_build_request_pr_body(row)
+        self.assertIn("## Goal", body)
+        self.assertIn("## Scope", body)
+        self.assertIn("## Constraints", body)
+        self.assertIn("## Proof", body)
+        self.assertIn("## Recommendation", body)
+        self.assertIn("## Risk Notes", body)
+        self.assertIn("revert branch commit", body)
+
 
 class BuildIntakeUiSurfaceTests(unittest.TestCase):
     def test_build_intake_proxy_routes_to_backend(self):
@@ -316,6 +367,7 @@ class BuildIntakeUiSurfaceTests(unittest.TestCase):
         execution_complete_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/execution/[runId]/complete/route.ts")
         verification_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/verification/route.ts")
         github_sync_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/github-sync/route.ts")
+        github_writeback_source = read_repo_file("apps/tufflove-web/app/api/familyops/build-intake/[id]/github-writeback/route.ts")
 
         self.assertIn("/v1/build/intake", list_source)
         self.assertIn("/v1/build/intake/${id}", detail_source)
@@ -327,6 +379,7 @@ class BuildIntakeUiSurfaceTests(unittest.TestCase):
         self.assertIn("/v1/build/intake/${id}/execution/${runId}/complete", execution_complete_source)
         self.assertIn("/v1/build/intake/${id}/verification", verification_source)
         self.assertIn("/v1/build/intake/${id}/github-sync", github_sync_source)
+        self.assertIn("/v1/build/intake/${id}/github-writeback", github_writeback_source)
 
     def test_command_surface_exposes_build_intake_and_stage_controls(self):
         source = read_repo_file("apps/tufflove-web/app/familyops/router/ModelRouterClient.tsx")
@@ -340,6 +393,8 @@ class BuildIntakeUiSurfaceTests(unittest.TestCase):
         self.assertIn("Verification Hook", source)
         self.assertIn("Live GitHub PR Sync", source)
         self.assertIn("Sync GitHub PR Status", source)
+        self.assertIn("GitHub Draft PR Writeback", source)
+        self.assertIn("Create/Update Draft PR in GitHub", source)
         self.assertIn("Build Intake + Router + Mission Timeline", source)
 
 

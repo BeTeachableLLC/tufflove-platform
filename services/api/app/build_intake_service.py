@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import os
 import re
 from typing import Any
@@ -42,6 +43,7 @@ RECOMMENDATIONS = {
 GITHUB_CHECK_STATUSES = {"unknown", "pending", "passing", "failing"}
 GITHUB_REVIEW_STATUSES = {"unknown", "pending", "approved", "changes_requested"}
 GITHUB_PR_STATES = {"open", "closed", "merged", "unknown"}
+GITHUB_WRITEBACK_STATUSES = {"never", "success", "failed"}
 SENSITIVE_PATTERNS = [
     re.compile(r"(?i)(access[_-]?token\s*[=:]\s*)([^\s,;]+)"),
     re.compile(r"(?i)(refresh[_-]?token\s*[=:]\s*)([^\s,;]+)"),
@@ -162,6 +164,13 @@ def _normalize_github_review_status(raw: str, *, default: str = "unknown") -> st
 def _normalize_github_pr_state(raw: str, *, default: str = "unknown") -> str:
     candidate = str(raw or default).strip().lower()
     if candidate not in GITHUB_PR_STATES:
+        return default
+    return candidate
+
+
+def _normalize_github_writeback_status(raw: str, *, default: str = "never") -> str:
+    candidate = str(raw or default).strip().lower()
+    if candidate not in GITHUB_WRITEBACK_STATUSES:
         return default
     return candidate
 
@@ -314,6 +323,12 @@ def _serialize_build_request(row: dict[str, Any]) -> dict[str, Any]:
         "latest_execution_run_id": row["latest_execution_run_id"],
         "failure_note": row["failure_note"],
         "rollback_note": row["rollback_note"],
+        "github_repo": row["github_repo"],
+        "github_head_ref": row["github_head_ref"],
+        "github_base_ref": row["github_base_ref"],
+        "github_writeback_status": row["github_writeback_status"],
+        "github_writeback_error": row["github_writeback_error"],
+        "github_last_writeback_at": _to_iso(row["github_last_writeback_at"]),
         "created_by": row["created_by"],
         "created_at": _to_iso(row["created_at"]),
         "updated_at": _to_iso(row["updated_at"]),
@@ -425,6 +440,12 @@ def init_build_intake_tables() -> None:
                     latest_execution_run_id text,
                     failure_note text NOT NULL DEFAULT '',
                     rollback_note text NOT NULL DEFAULT '',
+                    github_repo text NOT NULL DEFAULT '',
+                    github_head_ref text NOT NULL DEFAULT '',
+                    github_base_ref text NOT NULL DEFAULT 'main',
+                    github_writeback_status text NOT NULL DEFAULT 'never',
+                    github_writeback_error text NOT NULL DEFAULT '',
+                    github_last_writeback_at timestamptz,
                     created_by text NOT NULL DEFAULT 'admin',
                     created_at timestamptz NOT NULL DEFAULT now(),
                     updated_at timestamptz NOT NULL DEFAULT now()
@@ -465,6 +486,42 @@ def init_build_intake_tables() -> None:
                 """
                 ALTER TABLE build_requests
                 ADD COLUMN IF NOT EXISTS rollback_note text NOT NULL DEFAULT '';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS github_repo text NOT NULL DEFAULT '';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS github_head_ref text NOT NULL DEFAULT '';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS github_base_ref text NOT NULL DEFAULT 'main';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS github_writeback_status text NOT NULL DEFAULT 'never';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS github_writeback_error text NOT NULL DEFAULT '';
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE build_requests
+                ADD COLUMN IF NOT EXISTS github_last_writeback_at timestamptz;
                 """
             )
             cur.execute(
@@ -639,6 +696,12 @@ def _get_build_request_row(build_request_id: str) -> dict[str, Any] | None:
                     latest_execution_run_id,
                     failure_note,
                     rollback_note,
+                    github_repo,
+                    github_head_ref,
+                    github_base_ref,
+                    github_writeback_status,
+                    github_writeback_error,
+                    github_last_writeback_at,
                     created_by,
                     created_at,
                     updated_at
@@ -869,7 +932,10 @@ def _compute_github_sync_drift(build_row: dict[str, Any], github_sync: dict[str,
         return {"has_drift": False, "items": []}
 
     items: list[dict[str, str]] = []
-    stored_pr = _parse_pr_number(build_row.get("pr_number"), build_row.get("pr_url"))
+    stored_pr = _parse_pr_number(
+        str(build_row.get("pr_number") or ""),
+        str(build_row.get("pr_url") or ""),
+    )
     live_pr = str(github_sync.get("pr_number") or "").strip() or None
     if stored_pr and live_pr and stored_pr != live_pr:
         items.append(
@@ -881,7 +947,11 @@ def _compute_github_sync_drift(build_row: dict[str, Any], github_sync: dict[str,
             }
         )
 
-    stored_branch = str(build_row.get("branch_name") or "").strip() or None
+    stored_branch = (
+        str(build_row.get("github_head_ref") or "").strip()
+        or str(build_row.get("branch_name") or "").strip()
+        or None
+    )
     live_head = str(github_sync.get("head_ref") or "").strip() or None
     if stored_branch and live_head and stored_branch != live_head:
         items.append(
@@ -893,7 +963,7 @@ def _compute_github_sync_drift(build_row: dict[str, Any], github_sync: dict[str,
             }
         )
 
-    stored_repo = _parse_repo_from_pr_url(build_row.get("pr_url"))
+    stored_repo = str(build_row.get("github_repo") or "").strip() or _parse_repo_from_pr_url(str(build_row.get("pr_url") or ""))
     live_repo = str(github_sync.get("repo") or "").strip() or None
     if stored_repo and live_repo and stored_repo.lower() != live_repo.lower():
         items.append(
@@ -969,6 +1039,78 @@ def _fetch_github_pr_snapshot(*, repo: str, pr_number: str, token: str) -> dict[
             },
         },
     }
+
+
+def _github_api_headers(token: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _github_error_message(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    message = str((payload or {}).get("message") or "").strip()
+    if message:
+        return f"{message} ({response.status_code})"
+    return f"GitHub API request failed ({response.status_code})"
+
+
+def _owner_from_repo(repo: str) -> str | None:
+    raw = str(repo or "").strip()
+    if "/" not in raw:
+        return None
+    owner = raw.split("/", 1)[0].strip()
+    return owner or None
+
+
+def _default_pr_title(goal: str) -> str:
+    compact = " ".join(str(goal or "").split()).strip()
+    if not compact:
+        return "build: update implementation"
+    trimmed = compact[:92]
+    return f"build: {trimmed}"
+
+
+def generate_build_request_pr_body(row: dict[str, Any]) -> str:
+    constraints = row.get("constraints_json") if isinstance(row.get("constraints_json"), dict) else {}
+    constraints_text = "{}"
+    if constraints:
+        constraints_text = json.dumps(constraints, indent=2, sort_keys=True)
+
+    lines: list[str] = [
+        "## Goal",
+        str(row.get("goal") or "-"),
+        "",
+        "## Scope",
+        str(row.get("scope_summary") or "-"),
+        "",
+        "## Constraints",
+        f"```json\n{constraints_text}\n```",
+        "",
+        "## Proof",
+        f"- proof summary: {str(row.get('proof_summary') or '-').strip() or '-'}",
+        f"- test summary: {str(row.get('test_summary') or '-').strip() or '-'}",
+        f"- files changed summary: {str(row.get('files_changed_summary') or '-').strip() or '-'}",
+        "",
+        "## Recommendation",
+        f"- {str(row.get('recommendation') or '-').strip() or '-'}",
+    ]
+
+    failure_note = str(row.get("failure_note") or "").strip()
+    rollback_note = str(row.get("rollback_note") or "").strip()
+    if failure_note or rollback_note:
+        lines.extend(["", "## Risk Notes"])
+        if failure_note:
+            lines.append(f"- failure note: {failure_note}")
+        if rollback_note:
+            lines.append(f"- rollback note: {rollback_note}")
+
+    return "\n".join(lines).strip()
 
 
 def create_build_request(
@@ -1088,6 +1230,12 @@ def list_build_requests(
                     latest_execution_run_id,
                     failure_note,
                     rollback_note,
+                    github_repo,
+                    github_head_ref,
+                    github_base_ref,
+                    github_writeback_status,
+                    github_writeback_error,
+                    github_last_writeback_at,
                     created_by,
                     created_at,
                     updated_at
@@ -1229,6 +1377,12 @@ def _update_build_request(
     latest_execution_run_id: str | None = None,
     failure_note: str | None = None,
     rollback_note: str | None = None,
+    github_repo: str | None = None,
+    github_head_ref: str | None = None,
+    github_base_ref: str | None = None,
+    github_writeback_status: str | None = None,
+    github_writeback_error: str | None = None,
+    github_last_writeback_at: datetime | None = None,
 ) -> None:
     fields: list[str] = []
     values: list[Any] = []
@@ -1280,6 +1434,24 @@ def _update_build_request(
     if rollback_note is not None:
         fields.append("rollback_note = %s")
         values.append(str(rollback_note or "").strip())
+    if github_repo is not None:
+        fields.append("github_repo = %s")
+        values.append(str(github_repo or "").strip())
+    if github_head_ref is not None:
+        fields.append("github_head_ref = %s")
+        values.append(str(github_head_ref or "").strip())
+    if github_base_ref is not None:
+        fields.append("github_base_ref = %s")
+        values.append(str(github_base_ref or "").strip() or "main")
+    if github_writeback_status is not None:
+        fields.append("github_writeback_status = %s")
+        values.append(_normalize_github_writeback_status(github_writeback_status))
+    if github_writeback_error is not None:
+        fields.append("github_writeback_error = %s")
+        values.append(str(github_writeback_error or "").strip())
+    if github_last_writeback_at is not None:
+        fields.append("github_last_writeback_at = %s")
+        values.append(github_last_writeback_at)
     if not fields:
         return
 
@@ -1790,6 +1962,9 @@ def sync_build_request_github_status(
         stage=str(merge_readiness.get("stage") or row.get("stage") or "approval_pending"),
         recommendation=str(merge_readiness.get("recommendation") or row.get("recommendation") or "approval_pending"),
         pr_number=effective_pr_number,
+        github_repo=str(snapshot.get("repo") or effective_repo),
+        github_head_ref=str(snapshot.get("head_ref") or ""),
+        github_base_ref=str(snapshot.get("base_ref") or ""),
     )
     record_build_event(
         build_request_id=build_request_id,
@@ -1809,3 +1984,187 @@ def sync_build_request_github_status(
         created_by=actor,
     )
     return get_build_request(build_request_id)
+
+
+def writeback_build_request_github_pr(
+    build_request_id: str,
+    *,
+    actor: str,
+    repo: str | None = None,
+    head_branch: str | None = None,
+    base_branch: str | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    draft: bool = True,
+) -> dict[str, Any] | None:
+    row = _get_build_request_row(build_request_id)
+    if row is None:
+        return None
+
+    effective_repo = str(repo or "").strip()
+    if not effective_repo:
+        effective_repo = (
+            str(row.get("github_repo") or "").strip()
+            or _parse_repo_from_pr_url(row.get("pr_url"))
+            or str(os.getenv("GITHUB_REPO", "")).strip()
+        )
+
+    effective_head_branch = str(head_branch or "").strip()
+    if not effective_head_branch:
+        effective_head_branch = str(row.get("branch_name") or "").strip() or str(row.get("github_head_ref") or "").strip()
+    effective_base_branch = str(base_branch or "").strip() or str(row.get("github_base_ref") or "").strip() or "main"
+    effective_title = str(title or "").strip() or _default_pr_title(str(row.get("goal") or ""))
+    effective_body = str(body or "").strip() or generate_build_request_pr_body(row)
+
+    if not effective_repo:
+        raise ValueError("repo is required for GitHub writeback")
+    if not effective_head_branch:
+        raise ValueError("head_branch is required for GitHub writeback")
+
+    token = _github_token()
+    if not token:
+        raise ValueError("GITHUB_TOKEN or GH_TOKEN is required for GitHub writeback")
+
+    timeout = httpx.Timeout(20.0, connect=5.0)
+    writeback_at = datetime.now(timezone.utc)
+    try:
+        existing_pr_number = _parse_pr_number(str(row.get("pr_number") or ""), str(row.get("pr_url") or ""))
+        with httpx.Client(
+            base_url="https://api.github.com",
+            headers=_github_api_headers(token),
+            timeout=timeout,
+        ) as client:
+            if not existing_pr_number:
+                owner = _owner_from_repo(effective_repo)
+                if owner:
+                    find_response = client.get(
+                        f"/repos/{effective_repo}/pulls",
+                        params={"state": "open", "head": f"{owner}:{effective_head_branch}"},
+                    )
+                    if find_response.status_code >= 400:
+                        raise ValueError(_github_error_message(find_response))
+                    existing_matches = find_response.json() or []
+                    if isinstance(existing_matches, list) and existing_matches:
+                        existing_pr_number = str((existing_matches[0] or {}).get("number") or "").strip() or None
+
+            writeback_action = "update"
+            if existing_pr_number:
+                update_payload = {
+                    "title": effective_title,
+                    "body": effective_body,
+                    "base": effective_base_branch,
+                }
+                pr_response = client.patch(
+                    f"/repos/{effective_repo}/pulls/{existing_pr_number}",
+                    json=update_payload,
+                )
+            else:
+                writeback_action = "create"
+                create_payload = {
+                    "title": effective_title,
+                    "body": effective_body,
+                    "head": effective_head_branch,
+                    "base": effective_base_branch,
+                    "draft": bool(draft),
+                }
+                pr_response = client.post(
+                    f"/repos/{effective_repo}/pulls",
+                    json=create_payload,
+                )
+
+            if pr_response.status_code >= 400:
+                raise ValueError(_github_error_message(pr_response))
+
+            pr_data = pr_response.json() or {}
+            pr_number = str(pr_data.get("number") or "").strip()
+            pr_url = str(pr_data.get("html_url") or "").strip()
+            pr_head_ref = str(((pr_data.get("head") or {}).get("ref")) or "").strip() or effective_head_branch
+            pr_base_ref = str(((pr_data.get("base") or {}).get("ref")) or "").strip() or effective_base_branch
+            pr_draft = bool(pr_data.get("draft"))
+
+        if not pr_number or not pr_url:
+            raise ValueError("GitHub writeback returned incomplete PR metadata")
+
+        _update_build_request(
+            build_request_id,
+            pr_url=pr_url,
+            pr_number=pr_number,
+            branch_name=pr_head_ref,
+            github_repo=effective_repo,
+            github_head_ref=pr_head_ref,
+            github_base_ref=pr_base_ref,
+            github_writeback_status="success",
+            github_writeback_error="",
+            github_last_writeback_at=writeback_at,
+        )
+        record_build_event(
+            build_request_id=build_request_id,
+            tenant_id=row["tenant_id"],
+            event_type="github_writeback",
+            detail="GitHub draft PR writeback succeeded",
+            metadata={
+                "status": "success",
+                "action": writeback_action,
+                "repo": effective_repo,
+                "pr_number": pr_number,
+                "pr_url": pr_url,
+                "head_ref": pr_head_ref,
+                "base_ref": pr_base_ref,
+                "requested_draft": bool(draft),
+                "actual_draft": pr_draft,
+            },
+            created_by=actor,
+        )
+
+        request = get_build_request(build_request_id)
+        if request is None:
+            return None
+        try:
+            synced = sync_build_request_github_status(
+                build_request_id,
+                actor=actor,
+                repo=effective_repo,
+                pr_number=pr_number,
+            )
+            if synced is not None:
+                request = synced
+        except ValueError as sync_error:
+            record_build_event(
+                build_request_id=build_request_id,
+                tenant_id=row["tenant_id"],
+                event_type="github_sync",
+                detail="GitHub sync after writeback failed",
+                metadata={
+                    "status": "failed",
+                    "error": str(sync_error),
+                    "repo": effective_repo,
+                    "pr_number": pr_number,
+                },
+                created_by=actor,
+            )
+        return request
+    except ValueError as error:
+        _update_build_request(
+            build_request_id,
+            github_repo=effective_repo,
+            github_head_ref=effective_head_branch,
+            github_base_ref=effective_base_branch,
+            github_writeback_status="failed",
+            github_writeback_error=str(error),
+            github_last_writeback_at=writeback_at,
+        )
+        record_build_event(
+            build_request_id=build_request_id,
+            tenant_id=row["tenant_id"],
+            event_type="github_writeback",
+            detail="GitHub draft PR writeback failed",
+            metadata={
+                "status": "failed",
+                "error": str(error),
+                "repo": effective_repo,
+                "head_ref": effective_head_branch,
+                "base_ref": effective_base_branch,
+            },
+            created_by=actor,
+        )
+        raise
