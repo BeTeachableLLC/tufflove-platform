@@ -93,6 +93,8 @@ type BuildExecutionRun = {
   id: string;
   router_decision_id: string | null;
   mission_id: string | null;
+  provider: string;
+  task_class: string;
   command_class: string;
   target_scope: string;
   status: ExecutionRunStatus | string;
@@ -133,6 +135,20 @@ type BuildGithubDrift = {
   }>;
 };
 
+type ProviderStatus = {
+  provider: string;
+  enabled: boolean;
+  configured: boolean;
+  available: boolean;
+  model: string;
+};
+
+type ProviderStatusResponse = {
+  providers?: Record<string, ProviderStatus>;
+  openclaw_required_for_verification?: boolean;
+  openclaw_available?: boolean;
+};
+
 type BuildRequest = {
   id: string;
   goal: string;
@@ -162,6 +178,9 @@ type BuildRequest = {
   github_writeback_status: string;
   github_writeback_error: string;
   github_last_writeback_at: string | null;
+  required_verification_provider: string;
+  openclaw_verification_status: string;
+  openclaw_verification_detail: string;
   created_at: string | null;
   updated_at: string | null;
   branches?: BuildBranchRecord[];
@@ -286,6 +305,9 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [providerStatuses, setProviderStatuses] = useState<Record<string, ProviderStatus>>({});
+  const [providerStatusError, setProviderStatusError] = useState<string | null>(null);
+  const [providerStatusLoading, setProviderStatusLoading] = useState(false);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RouterDecisionDetail | null>(null);
@@ -312,6 +334,9 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
   const [actionLoading, setActionLoading] = useState<ActionType | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [lastActionPayload, setLastActionPayload] = useState<unknown>(null);
+  const [providerRunPrompt, setProviderRunPrompt] = useState("");
+  const [providerRunLane, setProviderRunLane] = useState("codex");
+  const [providerRunLoading, setProviderRunLoading] = useState(false);
 
   const [buildItems, setBuildItems] = useState<BuildRequest[]>([]);
   const [buildTotal, setBuildTotal] = useState(0);
@@ -340,6 +365,7 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
   const [buildPrProofSummary, setBuildPrProofSummary] = useState("");
   const [buildPrTestSummary, setBuildPrTestSummary] = useState("");
   const [buildPrFilesSummary, setBuildPrFilesSummary] = useState("");
+  const [executionTaskClass, setExecutionTaskClass] = useState<TaskClass>("implement");
   const [executionCommandClass, setExecutionCommandClass] = useState("codex");
   const [executionTargetScope, setExecutionTargetScope] = useState("repo");
   const [executionSummary, setExecutionSummary] = useState("");
@@ -414,6 +440,25 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
     }
   }, [buildStageFilter]);
 
+  const loadProviderStatuses = useCallback(async () => {
+    setProviderStatusLoading(true);
+    setProviderStatusError(null);
+    try {
+      const response = await fetch("/api/familyops/providers", { cache: "no-store" });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to load provider statuses (${response.status})`));
+      }
+      const data = (payload && typeof payload === "object" ? payload : {}) as ProviderStatusResponse;
+      setProviderStatuses(data.providers && typeof data.providers === "object" ? data.providers : {});
+    } catch (loadError) {
+      setProviderStatuses({});
+      setProviderStatusError(loadError instanceof Error ? loadError.message : String(loadError));
+    } finally {
+      setProviderStatusLoading(false);
+    }
+  }, []);
+
   const loadBuildDetail = useCallback(async (id: string) => {
     setBuildDetailLoading(true);
     setBuildDetailError(null);
@@ -435,6 +480,10 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       setBuildPrProofSummary(data.proof_summary || "");
       setBuildPrTestSummary(data.test_summary || "");
       setBuildPrFilesSummary(data.files_changed_summary || "");
+      const linkedTaskClass = typeof data.linked_router_decision?.task_class === "string" ? data.linked_router_decision.task_class : "implement";
+      if (["implement", "debug", "review", "verify"].includes(linkedTaskClass)) {
+        setExecutionTaskClass(linkedTaskClass as TaskClass);
+      }
       setExecutionLintSummary(data.proof_summary || "");
       setExecutionTestSummary(data.test_summary || "");
       setExecutionFilesSummary(data.files_changed_summary || "");
@@ -471,8 +520,10 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       if (!response.ok) {
         throw new Error(parseError(payload, `Failed to load mission detail (${response.status})`));
       }
-      setDetail(payload as RouterDecisionDetail);
+      const decision = payload as RouterDecisionDetail;
+      setDetail(decision);
       setSelectedId(id);
+      setProviderRunLane(decision.selected_model || "codex");
     } catch (loadError) {
       setDetail(null);
       setSelectedId(id);
@@ -485,6 +536,10 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
   useEffect(() => {
     void loadList();
   }, [loadList]);
+
+  useEffect(() => {
+    void loadProviderStatuses();
+  }, [loadProviderStatuses]);
 
   useEffect(() => {
     if (!selectedId && items.length > 0) {
@@ -568,6 +623,35 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       setActionError(submitError instanceof Error ? submitError.message : String(submitError));
     } finally {
       setActionLoading(null);
+    }
+  }
+
+  async function runDecisionProvider() {
+    if (!detail || !providerRunPrompt.trim()) return;
+    setProviderRunLoading(true);
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/familyops/model-router/${encodeURIComponent(detail.id)}/provider-run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actor: createdBy,
+          prompt: providerRunPrompt.trim(),
+          requested_lane: providerRunLane.trim() || null,
+          metadata: { source: "familyops-router" },
+        }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed provider run (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      await loadList();
+      await loadDetail(detail.id);
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setProviderRunLoading(false);
     }
   }
 
@@ -741,6 +825,7 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           actor: createdBy,
+          task_class: executionTaskClass,
           command_class: executionCommandClass.trim() || "codex",
           target_scope: executionTargetScope.trim() || "repo",
           summary: executionSummary.trim(),
@@ -983,6 +1068,32 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       {error ? <div className={styles.error}>{error}</div> : null}
       {buildError ? <div className={styles.error}>{buildError}</div> : null}
       {actionError ? <div className={styles.error}>{actionError}</div> : null}
+      {providerStatusError ? <div className={styles.error}>{providerStatusError}</div> : null}
+
+      <section className={styles.card}>
+        <h2>Provider Lanes</h2>
+        {providerStatusLoading ? <div className={styles.muted}>Loading provider status...</div> : null}
+        <div className={styles.detailGrid}>
+          {Object.values(providerStatuses).length === 0 ? <div className={styles.muted}>No provider status available.</div> : null}
+          {Object.values(providerStatuses).map((provider) => (
+            <div key={provider.provider}>
+              <strong>{provider.provider}</strong>{" "}
+              <span className={`${styles.badge} ${badgeClass(provider.available ? "passing" : "failing")}`}>
+                {provider.available ? "available" : "unavailable"}
+              </span>
+              <div className={styles.itemMeta}>enabled: {provider.enabled ? "true" : "false"}</div>
+              <div className={styles.itemMeta}>configured: {provider.configured ? "true" : "false"}</div>
+              <div className={styles.itemMeta}>model: {provider.model || "-"}</div>
+            </div>
+          ))}
+        </div>
+        <p className={styles.muted}>
+          Verification lane is required: OpenClaw must pass before merge-readiness. Non-verification lanes may fallback across enabled providers.
+        </p>
+        <button type="button" onClick={() => void loadProviderStatuses()} disabled={providerStatusLoading}>
+          {providerStatusLoading ? "Refreshing..." : "Refresh Providers"}
+        </button>
+      </section>
 
       <section className={styles.card}>
         <h2>Build Intake</h2>
@@ -1231,6 +1342,9 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
               <div><strong>Recommendation:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.recommendation || "unknown")}`}>{buildDetail.recommendation || "-"}</span></div>
               <div><strong>Proof Status:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.proof_status || "unknown")}`}>{buildDetail.proof_status || "-"}</span></div>
               <div><strong>Verification:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.verification_state || "unknown")}`}>{buildDetail.verification_state || "-"}</span></div>
+              <div><strong>Required Verification Provider:</strong> {buildDetail.required_verification_provider || "openclaw"}</div>
+              <div><strong>OpenClaw Gate:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.openclaw_verification_status || "unknown")}`}>{buildDetail.openclaw_verification_status || "-"}</span></div>
+              <div><strong>OpenClaw Verification Detail:</strong> {buildDetail.openclaw_verification_detail || "-"}</div>
               <div><strong>Latest Execution Run:</strong> {buildDetail.latest_execution_run_id || "-"}</div>
               <div><strong>Goal:</strong> {buildDetail.goal || "-"}</div>
               <div><strong>Lane:</strong> {buildDetail.requested_model_lane || "-"}</div>
@@ -1317,6 +1431,15 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
             <div className={styles.actionBlock}>
               <h3>Execution Runner + Proof Ingestion</h3>
               <label>
+                Task Class
+                <select value={executionTaskClass} onChange={(event) => setExecutionTaskClass(event.target.value as TaskClass)}>
+                  <option value="implement">implement</option>
+                  <option value="debug">debug</option>
+                  <option value="review">review</option>
+                  <option value="verify">verify</option>
+                </select>
+              </label>
+              <label>
                 Command Class
                 <input value={executionCommandClass} onChange={(event) => setExecutionCommandClass(event.target.value)} placeholder="codex" />
               </label>
@@ -1396,6 +1519,9 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
               <button type="button" onClick={() => void completeExecutionRun()} disabled={Boolean(buildStageUpdating) || !selectedExecutionRunId.trim()}>
                 Complete Execution + Ingest Proof
               </button>
+              <div className={styles.muted}>
+                Provider fallback is allowed for implement/debug/review lanes only. Verification lane is locked to OpenClaw.
+              </div>
             </div>
 
             <div className={styles.actionBlock}>
@@ -1555,7 +1681,7 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
                     <span className={`${styles.badge} ${badgeClass(run.status || "unknown")}`}>{run.status}</span>
                     <span className={`${styles.badge} ${badgeClass(run.proof_status || "unknown")}`}>proof {run.proof_status}</span>
                   </div>
-                  <div><strong>{run.command_class || "-"}</strong> · {run.target_scope || "-"}</div>
+                  <div><strong>{run.provider || run.command_class || "-"}</strong> · {run.task_class || "-"} · {run.target_scope || "-"}</div>
                   <div>{run.summary || "-"}</div>
                   <div className={styles.itemMeta}>lint/build: {run.lint_build_summary || "-"}</div>
                   <div className={styles.itemMeta}>tests: {run.test_summary || "-"}</div>
@@ -1648,6 +1774,23 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
                 <button type="button" onClick={() => void runAction("mark_ready_merge")} disabled={Boolean(actionLoading)}>Mark Ready for Merge</button>
               </div>
               {actionLoading ? <div className={styles.muted}>Running {actionLoading}...</div> : null}
+
+              <label>
+                Provider Lane Run
+                <select value={providerRunLane} onChange={(event) => setProviderRunLane(event.target.value)}>
+                  <option value="codex">codex/openai</option>
+                  <option value="claude">claude</option>
+                  <option value="gemini">gemini</option>
+                  <option value="openclaw">openclaw (required for verify)</option>
+                </select>
+              </label>
+              <label>
+                Provider Prompt
+                <textarea rows={3} value={providerRunPrompt} onChange={(event) => setProviderRunPrompt(event.target.value)} />
+              </label>
+              <button type="button" onClick={() => void runDecisionProvider()} disabled={providerRunLoading || !providerRunPrompt.trim()}>
+                {providerRunLoading ? "Running Provider..." : "Run Provider Adapter"}
+              </button>
             </div>
 
             <div className={styles.timelineBlock}>

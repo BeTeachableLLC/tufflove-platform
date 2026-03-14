@@ -8,6 +8,11 @@ from uuid import uuid4
 from psycopg.types.json import Jsonb
 
 from app.db import connect
+from app.provider_adapter_service import (
+    execute_provider_task,
+    is_openclaw_available,
+    resolve_provider_for_task,
+)
 
 TASK_CLASSES = {"implement", "debug", "review", "verify"}
 SUPPORTED_MODELS = {"codex", "claude", "gemini", "openclaw"}
@@ -65,8 +70,9 @@ def _to_jsonb(value: Any) -> Jsonb | None:
 
 
 def is_openclaw_verify_enabled() -> bool:
-    raw = os.getenv("MODEL_ROUTER_ENABLE_OPENCLOW_VERIFY", "false").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    raw = os.getenv("MODEL_ROUTER_ENABLE_OPENCLOW_VERIFY", "true").strip().lower()
+    flag_enabled = raw in {"1", "true", "yes", "on"}
+    return bool(flag_enabled and is_openclaw_available())
 
 
 def _normalize_task_class(raw: str) -> str:
@@ -141,16 +147,17 @@ def select_model(
     requested_model: str | None,
     openclaw_verify_enabled: bool | None = None,
 ) -> str:
-    openclaw_enabled = is_openclaw_verify_enabled() if openclaw_verify_enabled is None else bool(openclaw_verify_enabled)
     normalized_task_class = _normalize_task_class(task_class)
+    if normalized_task_class == "verify":
+        return "openclaw"
+
     default_model = DEFAULT_MODEL_BY_TASK_CLASS.get(normalized_task_class, "codex")
-    if default_model == "openclaw" and not openclaw_enabled:
-        default_model = "gemini"
-    return _normalize_model(
-        requested_model,
-        fallback=default_model,
-        openclaw_verify_enabled=openclaw_enabled,
-    )
+    requested = str(requested_model or "").strip().lower()
+    if requested == "openclaw":
+        return default_model
+    if requested in {"codex", "claude", "gemini"}:
+        return requested
+    return default_model
 
 
 def compute_final_recommendation(
@@ -203,18 +210,12 @@ def evaluate_verification_policy(
         reasons.append("proof_not_passing")
 
     if verification_required:
-        fallback = _default_verification_model(openclaw_verify_enabled=openclaw_enabled)
-        verification_model = _normalize_model(
-            requested_verification_model,
-            fallback=fallback,
-            openclaw_verify_enabled=openclaw_enabled,
-        )
-        if verification_model == normalized_selected_model:
-            for candidate in ("gemini", "claude", "codex"):
-                if candidate != normalized_selected_model:
-                    verification_model = candidate
-                    break
-        verification_status = "pending"
+        verification_model = "openclaw"
+        if openclaw_enabled:
+            verification_status = "pending"
+        else:
+            verification_status = "failed"
+            reasons.append("openclaw_unavailable")
     else:
         verification_model = None
         verification_status = "not_required"
@@ -525,15 +526,27 @@ def create_model_router_decision(
 ) -> dict[str, Any]:
     openclaw_enabled = is_openclaw_verify_enabled() if openclaw_verify_enabled is None else bool(openclaw_verify_enabled)
     normalized_task_class = _normalize_task_class(task_class)
-    normalized_requested_model = _normalize_optional_model(
-        requested_model,
-        openclaw_verify_enabled=openclaw_enabled,
-    )
-    selected_model = select_model(
-        task_class=normalized_task_class,
-        requested_model=normalized_requested_model,
-        openclaw_verify_enabled=openclaw_enabled,
-    )
+    normalized_requested_model = _normalize_optional_model(requested_model, openclaw_verify_enabled=True)
+    provider_resolution: dict[str, Any]
+    try:
+        provider_resolution = resolve_provider_for_task(
+            task_class=normalized_task_class,
+            requested_lane=normalized_requested_model,
+        )
+        selected_model = str(provider_resolution["lane"])
+    except ValueError as error:
+        selected_model = select_model(
+            task_class=normalized_task_class,
+            requested_model=normalized_requested_model,
+            openclaw_verify_enabled=openclaw_enabled,
+        )
+        provider_resolution = {
+            "provider": "unavailable",
+            "lane": selected_model,
+            "fallback_used": False,
+            "fallback_reason": str(error),
+            "required_verification_lane": "openclaw",
+        }
     normalized_proof_status = _normalize_proof_status(proof_status)
     policy = evaluate_verification_policy(
         task_class=normalized_task_class,
@@ -549,6 +562,10 @@ def create_model_router_decision(
     metadata_payload = dict(metadata or {})
     metadata_payload["policy_reasons"] = policy["policy_reasons"]
     metadata_payload["sensitive_change"] = bool(sensitive_change)
+    metadata_payload["provider"] = provider_resolution.get("provider")
+    metadata_payload["provider_fallback_used"] = bool(provider_resolution.get("fallback_used"))
+    metadata_payload["provider_fallback_reason"] = str(provider_resolution.get("fallback_reason") or "")
+    metadata_payload["required_verification_lane"] = "openclaw"
 
     with connect() as conn:
         with conn.cursor() as cur:
@@ -878,11 +895,7 @@ def apply_model_router_decision_action(
         next_review_state = "second_review_requested"
         next_verification_required = True
         next_verification_status = "pending"
-        if requested_model:
-            next_verification_model = _normalize_optional_model(
-                requested_model,
-                openclaw_verify_enabled=is_openclaw_verify_enabled(),
-            ) or next_verification_model
+        next_verification_model = "openclaw"
     elif normalized_action == "mark_ready_pr_review":
         next_review_state = "ready_for_pr_review"
         if next_verification_required and next_verification_status == "pending":
@@ -958,6 +971,90 @@ def apply_model_router_decision_action(
             "proof_status": next_proof_status,
             "verification_status": next_verification_status,
             "final_recommendation": next_final_recommendation,
+        },
+        created_by=actor_name,
+    )
+
+    return get_model_router_decision(decision_id, include_events=True)
+
+
+def execute_model_router_decision_provider_run(
+    decision_id: str,
+    *,
+    actor: str,
+    prompt: str,
+    requested_lane: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    current = _get_model_router_decision_row(decision_id)
+    if current is None:
+        return None
+
+    actor_name = str(actor or "").strip() or "admin"
+    lane = str(requested_lane or current.get("selected_model") or "").strip() or None
+    try:
+        result = execute_provider_task(
+            task_class=str(current.get("task_class") or "implement"),
+            prompt=prompt,
+            requested_lane=lane,
+            metadata=metadata or {},
+        )
+    except ValueError as error:
+        record_model_router_event(
+            decision_id=decision_id,
+            tenant_id=current["tenant_id"],
+            event_type="provider_run",
+            event_status="failed",
+            detail="Provider execution failed",
+            metadata={
+                "error": str(error),
+                "requested_lane": lane,
+            },
+            created_by=actor_name,
+        )
+        raise
+
+    current_metadata = current.get("metadata") if isinstance(current.get("metadata"), dict) else {}
+    next_metadata = dict(current_metadata)
+    next_metadata["provider"] = result.get("provider")
+    next_metadata["provider_lane"] = result.get("lane")
+    next_metadata["provider_fallback_used"] = bool(result.get("fallback_used"))
+    next_metadata["provider_fallback_reason"] = str(result.get("fallback_reason") or "")
+    next_metadata["required_verification_lane"] = "openclaw"
+
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE model_router_decisions
+                SET
+                    selected_model = %s,
+                    output_summary = %s,
+                    metadata = %s,
+                    updated_at = now()
+                WHERE id = %s;
+                """,
+                (
+                    str(result.get("lane") or current.get("selected_model") or ""),
+                    str(result.get("summary") or "").strip(),
+                    _to_jsonb(next_metadata),
+                    decision_id,
+                ),
+            )
+        conn.commit()
+
+    record_model_router_event(
+        decision_id=decision_id,
+        tenant_id=current["tenant_id"],
+        event_type="provider_run",
+        event_status="ok",
+        detail="Provider execution completed",
+        metadata={
+            "provider": result.get("provider"),
+            "lane": result.get("lane"),
+            "fallback_used": bool(result.get("fallback_used")),
+            "fallback_reason": result.get("fallback_reason"),
+            "summary": result.get("summary"),
         },
         created_by=actor_name,
     )

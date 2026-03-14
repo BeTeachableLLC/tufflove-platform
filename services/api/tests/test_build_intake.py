@@ -303,35 +303,56 @@ class BuildIntakeRecommendationTests(unittest.TestCase):
         self.assertIn("[REDACTED]", sanitized)
 
     def test_github_merge_readiness_ready_for_merge_when_all_conditions_pass(self):
-        result = build_intake_service.evaluate_github_merge_readiness(
-            proof_status="passed",
-            verification_state="passed",
-            verification_required=True,
-            github_sync={
-                "pr_state": "open",
-                "mergeability_summary": "CLEAN",
-                "checks_status": "passing",
-                "review_status": "approved",
-            },
-        )
+        with patch("app.build_intake_service.is_openclaw_available", return_value=True):
+            result = build_intake_service.evaluate_github_merge_readiness(
+                proof_status="passed",
+                verification_state="passed",
+                verification_required=True,
+                openclaw_verification_status="passed",
+                github_sync={
+                    "pr_state": "open",
+                    "mergeability_summary": "CLEAN",
+                    "checks_status": "passing",
+                    "review_status": "approved",
+                },
+            )
         self.assertTrue(result["ready"])
         self.assertEqual(result["stage"], "ready_for_merge")
 
     def test_github_merge_readiness_blocks_when_checks_or_reviews_fail(self):
-        result = build_intake_service.evaluate_github_merge_readiness(
-            proof_status="passed",
-            verification_state="passed",
-            verification_required=True,
-            github_sync={
-                "pr_state": "open",
-                "mergeability_summary": "CLEAN",
-                "checks_status": "failing",
-                "review_status": "changes_requested",
-            },
-        )
+        with patch("app.build_intake_service.is_openclaw_available", return_value=True):
+            result = build_intake_service.evaluate_github_merge_readiness(
+                proof_status="passed",
+                verification_state="passed",
+                verification_required=True,
+                openclaw_verification_status="passed",
+                github_sync={
+                    "pr_state": "open",
+                    "mergeability_summary": "CLEAN",
+                    "checks_status": "failing",
+                    "review_status": "changes_requested",
+                },
+            )
         self.assertFalse(result["ready"])
         self.assertIn("checks_not_passing", result["reasons"])
         self.assertIn("review_not_approved", result["reasons"])
+
+    def test_github_merge_readiness_blocks_when_openclaw_verify_missing(self):
+        with patch("app.build_intake_service.is_openclaw_available", return_value=True):
+            result = build_intake_service.evaluate_github_merge_readiness(
+                proof_status="passed",
+                verification_state="passed",
+                verification_required=True,
+                openclaw_verification_status="pending",
+                github_sync={
+                    "pr_state": "open",
+                    "mergeability_summary": "CLEAN",
+                    "checks_status": "passing",
+                    "review_status": "approved",
+                },
+            )
+        self.assertFalse(result["ready"])
+        self.assertIn("openclaw_verification_missing_or_failed", result["reasons"])
 
     def test_generate_pr_body_includes_required_sections(self):
         row = {
