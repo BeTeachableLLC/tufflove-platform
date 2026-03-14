@@ -108,6 +108,31 @@ type BuildExecutionRun = {
   finished_at: string | null;
 };
 
+type BuildGithubSyncState = {
+  id: string;
+  repo: string;
+  branch: string;
+  pr_number: string;
+  pr_state: string;
+  mergeability_summary: string;
+  checks_status: "unknown" | "pending" | "passing" | "failing" | string;
+  review_status: "unknown" | "pending" | "approved" | "changes_requested" | string;
+  head_ref: string;
+  base_ref: string;
+  blocked_reasons?: string[];
+  synced_at: string | null;
+};
+
+type BuildGithubDrift = {
+  has_drift: boolean;
+  items: Array<{
+    field: string;
+    stored: string;
+    live: string;
+    reason: string;
+  }>;
+};
+
 type BuildRequest = {
   id: string;
   goal: string;
@@ -141,6 +166,8 @@ type BuildRequestDetail = BuildRequest & {
   linked_router_decision?: RouterDecision | null;
   linked_mission?: MissionDetail | null;
   execution_runs?: BuildExecutionRun[];
+  github_sync?: BuildGithubSyncState | null;
+  github_sync_drift?: BuildGithubDrift;
 };
 
 type BuildListResponse = {
@@ -224,8 +251,8 @@ function pretty(value: unknown): string {
 
 function badgeClass(status: string): string {
   const normalized = status.toLowerCase();
-  if (["passed", "passing", "ready_for_pr_review", "ready_for_merge"].includes(normalized)) return styles.good;
-  if (["failed", "failing", "rejected", "needs_changes", "revise_before_pr"].includes(normalized)) return styles.bad;
+  if (["passed", "passing", "ready_for_pr_review", "ready_for_merge", "approved", "clean", "has_hooks"].includes(normalized)) return styles.good;
+  if (["failed", "failing", "rejected", "needs_changes", "revise_before_pr", "changes_requested", "dirty", "blocked", "behind"].includes(normalized)) return styles.bad;
   if (["pending", "not_run", "needs_second_model_review", "rerun_requested", "second_review_requested"].includes(normalized)) {
     return styles.warn;
   }
@@ -322,6 +349,8 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
   const [selectedExecutionRunId, setSelectedExecutionRunId] = useState("");
   const [verificationState, setVerificationState] = useState<BuildVerificationState>("pending");
   const [verificationDetail, setVerificationDetail] = useState("");
+  const [githubRepoOverride, setGithubRepoOverride] = useState("");
+  const [githubPrOverride, setGithubPrOverride] = useState("");
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -402,6 +431,8 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
       const latestRunId = data.latest_execution_run_id || data.execution_runs?.[0]?.id || "";
       setSelectedExecutionRunId(latestRunId);
       setVerificationState((data.verification_state as BuildVerificationState) || "pending");
+      setGithubRepoOverride(data.github_sync?.repo || "");
+      setGithubPrOverride(data.github_sync?.pr_number || data.pr_number || "");
     } catch (loadError) {
       setBuildDetail(null);
       setSelectedBuildId(id);
@@ -789,6 +820,34 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
     }
   }
 
+  async function syncGithubStatus() {
+    if (!buildDetail) return;
+    setBuildStageUpdating("approval_pending");
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/familyops/build-intake/${encodeURIComponent(buildDetail.id)}/github-sync`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actor: createdBy,
+          repo: githubRepoOverride.trim() || null,
+          pr_number: githubPrOverride.trim() || null,
+        }),
+      });
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        throw new Error(parseError(payload, `Failed to sync GitHub PR status (${response.status})`));
+      }
+      setLastActionPayload(payload);
+      await loadBuildList();
+      await loadBuildDetail(buildDetail.id);
+    } catch (submitError) {
+      setActionError(submitError instanceof Error ? submitError.message : String(submitError));
+    } finally {
+      setBuildStageUpdating(null);
+    }
+  }
+
   const activeQueue = useMemo(
     () => items.filter((item) => ACTIVE_STATES.has(item.review_state)),
     [items],
@@ -835,6 +894,24 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
     }
     records.sort((a, b) => (a.at || "").localeCompare(b.at || ""));
     return records;
+  }, [buildDetail]);
+
+  const mergeReadiness = useMemo(() => {
+    const sync = buildDetail?.github_sync;
+    if (!sync) {
+      return {
+        status: "not_synced",
+        blockedReasons: ["github_sync_missing"],
+      };
+    }
+    const blocked = Array.isArray(sync.blocked_reasons) ? sync.blocked_reasons : [];
+    if (blocked.length > 0) {
+      return { status: "blocked", blockedReasons: blocked };
+    }
+    if (buildDetail?.recommendation === "ready_for_merge") {
+      return { status: "ready_for_merge", blockedReasons: [] as string[] };
+    }
+    return { status: "blocked", blockedReasons: ["recommendation_not_ready_for_merge"] };
   }, [buildDetail]);
 
   return (
@@ -1327,6 +1404,46 @@ export default function ModelRouterClient({ createdBy }: ModelRouterClientProps)
               <button type="button" onClick={() => void savePrDraft()} disabled={Boolean(buildStageUpdating) || !buildPrUrl.trim()}>
                 Save PR Draft Metadata
               </button>
+            </div>
+
+            <div className={styles.actionBlock}>
+              <h3>Live GitHub PR Sync</h3>
+              <label>
+                Repo Override (optional)
+                <input value={githubRepoOverride} onChange={(event) => setGithubRepoOverride(event.target.value)} placeholder="BeTeachableLLC/tufflove-platform" />
+              </label>
+              <label>
+                PR Number Override (optional)
+                <input value={githubPrOverride} onChange={(event) => setGithubPrOverride(event.target.value)} placeholder="123" />
+              </label>
+              <button type="button" onClick={() => void syncGithubStatus()} disabled={Boolean(buildStageUpdating)}>
+                Sync GitHub PR Status
+              </button>
+
+              {buildDetail.github_sync ? (
+                <div className={styles.detailGrid}>
+                  <div><strong>Repo:</strong> {buildDetail.github_sync.repo || "-"}</div>
+                  <div><strong>PR:</strong> {buildDetail.github_sync.pr_number || "-"}</div>
+                  <div><strong>PR State:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.github_sync.pr_state || "unknown")}`}>{buildDetail.github_sync.pr_state || "-"}</span></div>
+                  <div><strong>Mergeability:</strong> <span className={`${styles.badge} ${badgeClass((buildDetail.github_sync.mergeability_summary || "unknown").toLowerCase())}`}>{buildDetail.github_sync.mergeability_summary || "-"}</span></div>
+                  <div><strong>Checks:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.github_sync.checks_status || "unknown")}`}>{buildDetail.github_sync.checks_status || "-"}</span></div>
+                  <div><strong>Reviews:</strong> <span className={`${styles.badge} ${badgeClass(buildDetail.github_sync.review_status || "unknown")}`}>{buildDetail.github_sync.review_status || "-"}</span></div>
+                  <div><strong>Head/Base:</strong> {buildDetail.github_sync.head_ref || "-"} → {buildDetail.github_sync.base_ref || "-"}</div>
+                  <div><strong>Synced At:</strong> {formatDateTime(buildDetail.github_sync.synced_at)}</div>
+                  <div><strong>Merge Readiness:</strong> <span className={`${styles.badge} ${badgeClass(mergeReadiness.status)}`}>{mergeReadiness.status}</span></div>
+                </div>
+              ) : (
+                <div className={styles.muted}>No GitHub sync snapshot yet.</div>
+              )}
+
+              {mergeReadiness.blockedReasons.length > 0 ? (
+                <div className={styles.muted}>Blocked reasons: {mergeReadiness.blockedReasons.join(", ")}</div>
+              ) : null}
+              {buildDetail.github_sync_drift?.has_drift ? (
+                <div className={styles.muted}>
+                  Metadata drift detected: {buildDetail.github_sync_drift.items.map((item) => item.reason).join(", ")}
+                </div>
+              ) : null}
             </div>
 
             <div className={styles.timelineBlock}>

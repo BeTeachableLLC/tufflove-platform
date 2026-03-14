@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 import re
 from typing import Any
 from uuid import uuid4
 
+import httpx
 from psycopg.types.json import Jsonb
 
 from app.db import connect
@@ -34,8 +36,12 @@ RECOMMENDATIONS = {
     "verification_requested",
     "ready_for_pr_review",
     "approval_pending",
+    "ready_for_merge",
     "revise_before_pr",
 }
+GITHUB_CHECK_STATUSES = {"unknown", "pending", "passing", "failing"}
+GITHUB_REVIEW_STATUSES = {"unknown", "pending", "approved", "changes_requested"}
+GITHUB_PR_STATES = {"open", "closed", "merged", "unknown"}
 SENSITIVE_PATTERNS = [
     re.compile(r"(?i)(access[_-]?token\s*[=:]\s*)([^\s,;]+)"),
     re.compile(r"(?i)(refresh[_-]?token\s*[=:]\s*)([^\s,;]+)"),
@@ -139,6 +145,132 @@ def compute_recommendation(
     return {"stage": "ready_for_pr_review", "recommendation": "ready_for_pr_review"}
 
 
+def _normalize_github_checks_status(raw: str, *, default: str = "unknown") -> str:
+    candidate = str(raw or default).strip().lower()
+    if candidate not in GITHUB_CHECK_STATUSES:
+        return default
+    return candidate
+
+
+def _normalize_github_review_status(raw: str, *, default: str = "unknown") -> str:
+    candidate = str(raw or default).strip().lower()
+    if candidate not in GITHUB_REVIEW_STATUSES:
+        return default
+    return candidate
+
+
+def _normalize_github_pr_state(raw: str, *, default: str = "unknown") -> str:
+    candidate = str(raw or default).strip().lower()
+    if candidate not in GITHUB_PR_STATES:
+        return default
+    return candidate
+
+
+def _github_token() -> str | None:
+    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        token = str(os.getenv(name, "")).strip()
+        if token:
+            return token
+    return None
+
+
+def _parse_repo_from_pr_url(pr_url: str | None) -> str | None:
+    raw = str(pr_url or "").strip()
+    if not raw:
+        return None
+    pattern = re.compile(r"github\.com/([^/]+/[^/]+)/pull/\d+", re.IGNORECASE)
+    match = pattern.search(raw)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _parse_pr_number(pr_number: str | None, pr_url: str | None) -> str | None:
+    direct = str(pr_number or "").strip()
+    if direct.isdigit():
+        return direct
+    raw_url = str(pr_url or "").strip()
+    if not raw_url:
+        return None
+    match = re.search(r"/pull/(\d+)", raw_url)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _derive_checks_status(check_runs: list[dict[str, Any]]) -> str:
+    if not check_runs:
+        return "unknown"
+    any_pending = False
+    for run in check_runs:
+        status = str(run.get("status") or "").strip().lower()
+        conclusion = str(run.get("conclusion") or "").strip().lower()
+        if status != "completed":
+            any_pending = True
+            continue
+        if conclusion not in {"success", "neutral", "skipped"}:
+            return "failing"
+    if any_pending:
+        return "pending"
+    return "passing"
+
+
+def _derive_review_status(reviews: list[dict[str, Any]]) -> str:
+    if not reviews:
+        return "pending"
+    has_approval = False
+    for review in reviews:
+        state = str(review.get("state") or "").strip().upper()
+        if state == "CHANGES_REQUESTED":
+            return "changes_requested"
+        if state == "APPROVED":
+            has_approval = True
+    if has_approval:
+        return "approved"
+    return "pending"
+
+
+def evaluate_github_merge_readiness(
+    *,
+    proof_status: str,
+    verification_state: str,
+    verification_required: bool,
+    github_sync: dict[str, Any] | None,
+) -> dict[str, Any]:
+    base = compute_recommendation(
+        proof_status=proof_status,
+        verification_state=verification_state,
+        verification_required=verification_required,
+        has_pr_draft=True,
+    )
+    reasons: list[str] = []
+    if base["stage"] != "approval_pending":
+        reasons.append("proof_or_verification_incomplete")
+        return {"ready": False, "reasons": reasons, "stage": base["stage"], "recommendation": base["recommendation"]}
+
+    if not github_sync:
+        reasons.append("github_sync_missing")
+        return {"ready": False, "reasons": reasons, "stage": "approval_pending", "recommendation": "approval_pending"}
+
+    pr_state = _normalize_github_pr_state(str(github_sync.get("pr_state") or "unknown"))
+    mergeability = str(github_sync.get("mergeability_summary") or "").strip().upper()
+    checks_status = _normalize_github_checks_status(str(github_sync.get("checks_status") or "unknown"))
+    review_status = _normalize_github_review_status(str(github_sync.get("review_status") or "unknown"))
+
+    if pr_state != "open":
+        reasons.append("pr_not_open")
+    if mergeability not in {"CLEAN", "HAS_HOOKS"}:
+        reasons.append("mergeability_blocked")
+    if checks_status != "passing":
+        reasons.append("checks_not_passing")
+    if review_status != "approved":
+        reasons.append("review_not_approved")
+
+    if reasons:
+        return {"ready": False, "reasons": reasons, "stage": "approval_pending", "recommendation": "approval_pending"}
+    return {"ready": True, "reasons": [], "stage": "ready_for_merge", "recommendation": "ready_for_merge"}
+
+
 def _safe_branch_slug(value: str) -> str:
     normalized = str(value or "").strip().lower()
     if not normalized:
@@ -235,6 +367,29 @@ def _serialize_execution_run(row: dict[str, Any]) -> dict[str, Any]:
         "rollback_note": row["rollback_note"],
         "started_at": _to_iso(row["started_at"]),
         "finished_at": _to_iso(row["finished_at"]),
+        "created_by": row["created_by"],
+        "created_at": _to_iso(row["created_at"]),
+        "updated_at": _to_iso(row["updated_at"]),
+    }
+
+
+def _serialize_github_sync(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "build_request_id": row["build_request_id"],
+        "tenant_id": row["tenant_id"],
+        "repo": row["repo"],
+        "branch": row["branch"],
+        "pr_number": row["pr_number"],
+        "pr_state": row["pr_state"],
+        "mergeability_summary": row["mergeability_summary"],
+        "checks_status": row["checks_status"],
+        "review_status": row["review_status"],
+        "head_ref": row["head_ref"],
+        "base_ref": row["base_ref"],
+        "blocked_reasons": row["blocked_reasons_json"] or [],
+        "sync_payload": row["sync_payload_json"] or {},
+        "synced_at": _to_iso(row["synced_at"]),
         "created_by": row["created_by"],
         "created_at": _to_iso(row["created_at"]),
         "updated_at": _to_iso(row["updated_at"]),
@@ -414,6 +569,42 @@ def init_build_intake_tables() -> None:
                 """
                 CREATE INDEX IF NOT EXISTS idx_build_execution_runs_tenant
                 ON build_execution_runs (tenant_id, created_at DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS build_github_sync_states(
+                    id text PRIMARY KEY,
+                    build_request_id text NOT NULL REFERENCES build_requests(id) ON DELETE CASCADE,
+                    tenant_id text NOT NULL,
+                    repo text NOT NULL DEFAULT '',
+                    branch text NOT NULL DEFAULT '',
+                    pr_number text NOT NULL DEFAULT '',
+                    pr_state text NOT NULL DEFAULT 'unknown',
+                    mergeability_summary text NOT NULL DEFAULT '',
+                    checks_status text NOT NULL DEFAULT 'unknown',
+                    review_status text NOT NULL DEFAULT 'unknown',
+                    head_ref text NOT NULL DEFAULT '',
+                    base_ref text NOT NULL DEFAULT '',
+                    blocked_reasons_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+                    sync_payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+                    synced_at timestamptz NOT NULL DEFAULT now(),
+                    created_by text NOT NULL DEFAULT 'admin',
+                    created_at timestamptz NOT NULL DEFAULT now(),
+                    updated_at timestamptz NOT NULL DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_build_github_sync_request
+                ON build_github_sync_states (build_request_id, synced_at DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_build_github_sync_tenant
+                ON build_github_sync_states (tenant_id, synced_at DESC);
                 """
             )
         conn.commit()
@@ -632,6 +823,154 @@ def _infer_execution_proof_status(*, execution_status: str, proof_status: str | 
     return "unknown"
 
 
+def _get_latest_github_sync_row(build_request_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    build_request_id,
+                    tenant_id,
+                    repo,
+                    branch,
+                    pr_number,
+                    pr_state,
+                    mergeability_summary,
+                    checks_status,
+                    review_status,
+                    head_ref,
+                    base_ref,
+                    blocked_reasons_json,
+                    sync_payload_json,
+                    synced_at,
+                    created_by,
+                    created_at,
+                    updated_at
+                FROM build_github_sync_states
+                WHERE build_request_id = %s
+                ORDER BY synced_at DESC
+                LIMIT 1;
+                """,
+                (build_request_id,),
+            )
+            return cur.fetchone()
+
+
+def get_latest_github_sync_state(build_request_id: str) -> dict[str, Any] | None:
+    row = _get_latest_github_sync_row(build_request_id)
+    if row is None:
+        return None
+    return _serialize_github_sync(row)
+
+
+def _compute_github_sync_drift(build_row: dict[str, Any], github_sync: dict[str, Any] | None) -> dict[str, Any]:
+    if github_sync is None:
+        return {"has_drift": False, "items": []}
+
+    items: list[dict[str, str]] = []
+    stored_pr = _parse_pr_number(build_row.get("pr_number"), build_row.get("pr_url"))
+    live_pr = str(github_sync.get("pr_number") or "").strip() or None
+    if stored_pr and live_pr and stored_pr != live_pr:
+        items.append(
+            {
+                "field": "pr_number",
+                "stored": stored_pr,
+                "live": live_pr,
+                "reason": "stored_pr_differs_from_github",
+            }
+        )
+
+    stored_branch = str(build_row.get("branch_name") or "").strip() or None
+    live_head = str(github_sync.get("head_ref") or "").strip() or None
+    if stored_branch and live_head and stored_branch != live_head:
+        items.append(
+            {
+                "field": "branch",
+                "stored": stored_branch,
+                "live": live_head,
+                "reason": "stored_branch_differs_from_github_head",
+            }
+        )
+
+    stored_repo = _parse_repo_from_pr_url(build_row.get("pr_url"))
+    live_repo = str(github_sync.get("repo") or "").strip() or None
+    if stored_repo and live_repo and stored_repo.lower() != live_repo.lower():
+        items.append(
+            {
+                "field": "repo",
+                "stored": stored_repo,
+                "live": live_repo,
+                "reason": "stored_repo_differs_from_github_repo",
+            }
+        )
+
+    return {"has_drift": bool(items), "items": items}
+
+
+def _fetch_github_pr_snapshot(*, repo: str, pr_number: str, token: str) -> dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    timeout = httpx.Timeout(15.0, connect=5.0)
+    with httpx.Client(base_url="https://api.github.com", headers=headers, timeout=timeout) as client:
+        pr_response = client.get(f"/repos/{repo}/pulls/{pr_number}")
+        if pr_response.status_code >= 400:
+            raise ValueError(f"GitHub PR lookup failed ({pr_response.status_code})")
+        pr_data = pr_response.json()
+        head_ref = str(((pr_data.get("head") or {}).get("ref")) or "").strip()
+        base_ref = str(((pr_data.get("base") or {}).get("ref")) or "").strip()
+        head_sha = str(((pr_data.get("head") or {}).get("sha")) or "").strip()
+
+        check_runs: list[dict[str, Any]] = []
+        if head_sha:
+            checks_response = client.get(f"/repos/{repo}/commits/{head_sha}/check-runs")
+            if checks_response.status_code < 400:
+                check_runs = list((checks_response.json() or {}).get("check_runs") or [])
+
+        reviews_response = client.get(f"/repos/{repo}/pulls/{pr_number}/reviews")
+        reviews: list[dict[str, Any]] = []
+        if reviews_response.status_code < 400:
+            reviews = list(reviews_response.json() or [])
+
+        merged_at = pr_data.get("merged_at")
+        pr_state = "merged" if merged_at else _normalize_github_pr_state(str(pr_data.get("state") or "unknown"))
+        checks_status = _derive_checks_status(check_runs)
+        review_status = _derive_review_status(reviews)
+        mergeability_summary = str(pr_data.get("mergeable_state") or "").strip().upper()
+
+    return {
+        "repo": repo,
+        "branch": head_ref,
+        "pr_number": str(pr_number),
+        "pr_state": pr_state,
+        "mergeability_summary": mergeability_summary,
+        "checks_status": checks_status,
+        "review_status": review_status,
+        "head_ref": head_ref,
+        "base_ref": base_ref,
+        "sync_payload": {
+            "pr": {
+                "state": pr_data.get("state"),
+                "merged_at": merged_at,
+                "mergeable": pr_data.get("mergeable"),
+                "mergeable_state": pr_data.get("mergeable_state"),
+                "draft": pr_data.get("draft"),
+            },
+            "checks": {
+                "total": len(check_runs),
+                "status": checks_status,
+            },
+            "reviews": {
+                "total": len(reviews),
+                "status": review_status,
+            },
+        },
+    }
+
+
 def create_build_request(
     *,
     tenant_id: str,
@@ -804,6 +1143,9 @@ def get_build_request(build_request_id: str, *, include_timeline: bool = True) -
     request = _serialize_build_request(row)
     request["branches"] = _list_branch_records(build_request_id)
     request["execution_runs"] = list_execution_runs(build_request_id, limit=200)
+    github_sync = get_latest_github_sync_state(build_request_id)
+    request["github_sync"] = github_sync
+    request["github_sync_drift"] = _compute_github_sync_drift(row, github_sync)
 
     if include_timeline:
         timeline: list[dict[str, Any]] = []
@@ -1354,6 +1696,115 @@ def set_build_verification_state(
             "verification_state": normalized_verification_state,
             "verification_required": effective_verification_required,
             "recommendation": recommendation_update["recommendation"],
+        },
+        created_by=actor,
+    )
+    return get_build_request(build_request_id)
+
+
+def sync_build_request_github_status(
+    build_request_id: str,
+    *,
+    actor: str,
+    repo: str | None = None,
+    pr_number: str | None = None,
+) -> dict[str, Any] | None:
+    row = _get_build_request_row(build_request_id)
+    if row is None:
+        return None
+
+    effective_repo = str(repo or "").strip()
+    if not effective_repo:
+        effective_repo = _parse_repo_from_pr_url(row.get("pr_url")) or str(os.getenv("GITHUB_REPO", "")).strip()
+    effective_pr_number = _parse_pr_number(pr_number, row.get("pr_url"))
+    if not effective_repo:
+        raise ValueError("repo is required for GitHub sync")
+    if not effective_pr_number:
+        raise ValueError("pr_number is required for GitHub sync")
+
+    token = _github_token()
+    if not token:
+        raise ValueError("GITHUB_TOKEN or GH_TOKEN is required for GitHub sync")
+
+    snapshot = _fetch_github_pr_snapshot(
+        repo=effective_repo,
+        pr_number=effective_pr_number,
+        token=token,
+    )
+    verification_required = _resolve_verification_required(row)
+    merge_readiness = evaluate_github_merge_readiness(
+        proof_status=str(row.get("proof_status") or "unknown"),
+        verification_state=str(row.get("verification_state") or "not_required"),
+        verification_required=verification_required,
+        github_sync=snapshot,
+    )
+    blocked_reasons = list(merge_readiness.get("reasons") or [])
+
+    sync_record_id = str(uuid4())
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO build_github_sync_states(
+                    id,
+                    build_request_id,
+                    tenant_id,
+                    repo,
+                    branch,
+                    pr_number,
+                    pr_state,
+                    mergeability_summary,
+                    checks_status,
+                    review_status,
+                    head_ref,
+                    base_ref,
+                    blocked_reasons_json,
+                    sync_payload_json,
+                    synced_at,
+                    created_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s);
+                """,
+                (
+                    sync_record_id,
+                    build_request_id,
+                    row["tenant_id"],
+                    str(snapshot.get("repo") or ""),
+                    str(snapshot.get("branch") or ""),
+                    str(snapshot.get("pr_number") or ""),
+                    _normalize_github_pr_state(str(snapshot.get("pr_state") or "unknown")),
+                    str(snapshot.get("mergeability_summary") or "").strip().upper(),
+                    _normalize_github_checks_status(str(snapshot.get("checks_status") or "unknown")),
+                    _normalize_github_review_status(str(snapshot.get("review_status") or "unknown")),
+                    str(snapshot.get("head_ref") or ""),
+                    str(snapshot.get("base_ref") or ""),
+                    _to_jsonb(blocked_reasons),
+                    _to_jsonb(snapshot.get("sync_payload") or {}),
+                    str(actor or "").strip() or "admin",
+                ),
+            )
+        conn.commit()
+
+    _update_build_request(
+        build_request_id,
+        stage=str(merge_readiness.get("stage") or row.get("stage") or "approval_pending"),
+        recommendation=str(merge_readiness.get("recommendation") or row.get("recommendation") or "approval_pending"),
+        pr_number=effective_pr_number,
+    )
+    record_build_event(
+        build_request_id=build_request_id,
+        tenant_id=row["tenant_id"],
+        event_type="github_sync",
+        detail="GitHub PR status synced",
+        metadata={
+            "repo": effective_repo,
+            "pr_number": effective_pr_number,
+            "pr_state": snapshot.get("pr_state"),
+            "checks_status": snapshot.get("checks_status"),
+            "review_status": snapshot.get("review_status"),
+            "mergeability_summary": snapshot.get("mergeability_summary"),
+            "merge_ready": bool(merge_readiness.get("ready")),
+            "blocked_reasons": blocked_reasons,
         },
         created_by=actor,
     )
